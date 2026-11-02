@@ -4,6 +4,7 @@ const props = defineProps({ issue: Object, selected: Boolean, busy: Boolean })
 defineEmits(['accept', 'reject', 'pick'])
 const key = canon(props.issue.category || props.issue.type)
 const color = CATEGORIES[key].color
+const drives = CATEGORIES[key].drives || []
 </script>
 
 <template>
@@ -13,6 +14,7 @@ const color = CATEGORIES[key].color
       <span class="px-1.5 py-0.5 font-mono font-bold text-white" :style="{ background: color }">{{ CATEGORIES[key].num }}</span>
       <i :class="['fa-solid', CATEGORIES[key].icon]"></i>
       <span class="font-bold uppercase tracking-widest">{{ CATEGORIES[key].label }}</span>
+      <span v-for="d in drives" :key="d" :class="['border-2 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest', selected ? 'border-white text-white' : 'border-black text-black/70']">{{ d === 'ai' ? 'Penggunaan AI' : 'Similarity' }}</span>
       <span v-if="issue.needs_manual_review" class="ml-auto border-2 border-black bg-[#F2F2F2] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-black">Perlu cek manual</span>
     </div>
     <p class="text-sm">{{ issue.explanation }}</p>

@@ -213,7 +213,7 @@ onBeforeUnmount(() => {
       <span class="text-white">■</span> Pembelian sedang ditutup: payment gateway belum dikonfigurasi di server.
     </p>
     <p v-else-if="mode === 'simulator'" class="mt-6 border-2 border-black bg-[#F2F2F2] px-4 py-3 text-sm font-bold uppercase tracking-wide">
-      <span class="text-[#FF3000]">■</span> Mode uji: pembayaran disimulasikan, tidak ada uang berpindah.
+      <span class="text-[#FF3000]">■</span> Aktivasi Premium langsung aktif dan tidak menagih pembayaran.
     </p>
 
     <p v-if="notice" class="mt-4 flex items-center gap-3 border-2 border-black bg-black px-4 py-3 text-sm font-bold uppercase tracking-wide text-white">
@@ -330,7 +330,7 @@ onBeforeUnmount(() => {
           <i :class="['fa-solid', checking ? 'fa-circle-notch fa-spin' : 'fa-rotate-right']"></i>Saya sudah bayar, periksa
         </BaseButton>
         <BaseButton v-if="order.status === 'pending' && mode === 'simulator'" variant="accent" size="sm" :disabled="checking" @click="simulate">
-          <i class="fa-solid fa-flask"></i>Simulasikan lunas
+          <i class="fa-solid fa-bolt"></i>Aktifkan sekarang
         </BaseButton>
         <BaseButton v-if="order.status === 'paid'" variant="secondary" size="sm" @click="invoice(order)">
           <i class="fa-solid fa-file-invoice"></i>Unduh invoice PDF
