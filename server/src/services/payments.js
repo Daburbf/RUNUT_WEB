@@ -3,10 +3,7 @@ import { config } from '../config.js';
 import { payments, users } from '../repositories/index.js';
 import { HttpError } from '../middleware/errors.js';
 
-// Payment gateway Runut. Satu jalur Midtrans Core API untuk semua metode yang
-// tampil di halaman Premium, ditambah mode simulasi (tanpa kredensial, hanya di
-// luar produksi) agar alur bisa dicoba. Tidak ada nominal dari klien yang
-// dipakai: harga selalu dari konfigurasi server.
+// Seluruh transaksi memakai Midtrans; tanpa kredensial, pembelian dinonaktifkan.
 export const PAYMENT_METHODS = [
   { id: 'qris', label: 'QRIS', group: 'qris', note: 'Semua aplikasi: OVO, DANA, LinkAja, mobile banking', icon: 'fa-qrcode' },
   { id: 'va_bca', label: 'BCA Virtual Account', group: 'va', bank: 'bca', icon: 'fa-building-columns' },
@@ -33,10 +30,7 @@ const STATUS_MAP = {
   chargeback: 'failed',
 };
 
-export const paymentMode = () => {
-  if (config.payments.serverKey) return 'midtrans';
-  return config.env === 'production' ? 'unavailable' : 'simulator';
-};
+export const paymentMode = () => config.payments.serverKey ? 'midtrans' : 'unavailable';
 
 export const paymentInfo = () => ({
   available: paymentMode() !== 'unavailable',
@@ -106,17 +100,6 @@ function instructionsFrom(data, method) {
   }
 }
 
-function simulatorInstructions(method, orderId) {
-  const digits = () => String(Math.floor(1e11 + Math.random() * 8e11));
-  switch (method.group) {
-    case 'va': return { bank: method.bank, va_number: digits() };
-    case 'cstore': return { store: method.store, payment_code: String(Math.floor(1e9 + Math.random() * 8e9)) };
-    case 'ewallet': return { deeplink: null, code: orderId };
-    case 'card': return { redirect_url: `${config.frontendUrl}/#/premium?order=${orderId}` };
-    default: return { code: orderId };
-  }
-}
-
 async function chargeMidtrans(method, orderId, amount, user) {
   if (method.group === 'card') {
     const data = await gateway('/snap/v1/transactions', {
@@ -154,23 +137,21 @@ async function chargeMidtrans(method, orderId, amount, user) {
 
 export async function createPayment(user, methodId) {
   const mode = paymentMode();
-  if (mode === 'unavailable') {
+  const method = PAYMENT_METHODS.find((m) => m.id === String(methodId || ''));
+  if (!method) throw new HttpError(400, 'Pilih metode pembayaran yang tersedia.', { code: 'METHOD_INVALID' });
+  if (mode !== 'midtrans') {
     throw new HttpError(503, 'Pembelian Premium belum tersedia: payment gateway belum dikonfigurasi di server.', { code: 'PAYMENTS_UNAVAILABLE' });
   }
   if (user.is_premium) {
     throw new HttpError(409, 'Akun ini masih Premium. Perpanjangan bisa dilakukan setelah masa aktif berakhir.', { code: 'ALREADY_PREMIUM' });
   }
-  const method = PAYMENT_METHODS.find((m) => m.id === String(methodId || ''));
-  if (!method) throw new HttpError(400, 'Pilih metode pembayaran yang tersedia.', { code: 'METHOD_INVALID' });
   const amount = Number(config.premium.priceIdr);
   if (!(amount > 0)) throw new HttpError(503, 'Harga Premium belum ditetapkan di server.', { code: 'PRICE_NOT_CONFIGURED' });
 
   // Nomor order hanya dibuat server - klien tidak pernah menentukan nominal
   // maupun id transaksi.
   const orderId = `RUNUT-${Date.now().toString(36).toUpperCase()}-${randomBytes(3).toString('hex').toUpperCase()}`;
-  const charge = mode === 'midtrans'
-    ? await chargeMidtrans(method, orderId, amount, user)
-    : { providerRef: null, instructions: simulatorInstructions(method, orderId) };
+  const charge = await chargeMidtrans(method, orderId, amount, user);
 
   return payments.create({
     user_id: user.id,
@@ -217,16 +198,6 @@ export async function refreshPayment(row) {
   if (row.provider !== 'midtrans') return row;
   const data = await gateway(`/v2/${encodeURIComponent(row.order_id)}/status`);
   return applyStatus(row, data);
-}
-
-// Mode simulasi: tidak ada uang berpindah dan tidak ada panggilan gateway.
-// Hanya tersedia di luar produksi (paymentMode()).
-export async function simulatePaid(row) {
-  if (row.provider !== 'simulator' || paymentMode() !== 'simulator') {
-    throw new HttpError(403, 'Penandaan lunas manual hanya tersedia pada mode simulasi.', { code: 'SIMULATION_DISABLED' });
-  }
-  if (row.status === 'paid') return row;
-  return settle(row, `SIM-${row.order_id}`);
 }
 
 export function verifySignature(body) {

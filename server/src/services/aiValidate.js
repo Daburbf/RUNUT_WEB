@@ -110,7 +110,7 @@ export function validateAiIssues(parsed, originalText, { maxIssues = 30 } = {}) 
 export function rankIssues(issues, text = '') {
   const spans = paragraphSpans(text);
   const paragraphsOf = (snippet) => {
-    const needle = snippet.toLowerCase();
+    const needle = String(snippet || '').toLowerCase();
     if (!needle) return 1;
     let at = text.toLowerCase().indexOf(needle);
     const hit = new Set();

@@ -7,7 +7,6 @@ import request from 'supertest';
 // pengguna. Kuncinya wajib diverifikasi; tanpa kunci gateway, notifikasi
 // ditolak (tidak ada jalur "lunas" tanpa verifikasi).
 process.env.NODE_ENV = 'test';
-process.env.DEMO_PREMIUM = '';
 process.env.MIDTRANS_SERVER_KEY = 'server-key-uji-untuk-tanda-tangan';
 process.env.RATE_LIMIT_AUTH_MAX = '1000';
 process.env.JWT_ACCESS_SECRET = 'test-secret-yang-cukup-panjang-32-karakter';

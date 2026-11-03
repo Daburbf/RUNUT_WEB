@@ -2,7 +2,7 @@ import { payments } from '../repositories/index.js';
 import { HttpError, asyncHandler } from '../middleware/errors.js';
 import { buildPdf } from '../services/pdf.js';
 import {
-  createPayment, publicPayment, paymentInfo, refreshPayment, simulatePaid,
+  createPayment, publicPayment, paymentInfo, refreshPayment,
   handleNotification, fetchQrImage,
 } from '../services/payments.js';
 
@@ -52,14 +52,6 @@ export const paymentQr = asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', contentType);
   res.setHeader('Cache-Control', 'no-store');
   res.send(buffer);
-});
-
-// Mode simulasi saja: menandai lunas tanpa gateway. Tidak pernah tersedia di
-// produksi maupun untuk transaksi Midtrans asli.
-export const simulatePayment = asyncHandler(async (req, res) => {
-  const row = await ownedPayment(req.user.id, req.params.orderId);
-  const fresh = await simulatePaid(row);
-  res.json({ payment: publicPayment(fresh) });
 });
 
 // GET /api/payments/:orderId/invoice - bukti pembayaran dalam bentuk PDF.

@@ -2,7 +2,8 @@
 // Access token disimpan di memori saja. Refresh token berada di cookie
 // HttpOnly milik server sehingga tidak bisa dibaca skrip halaman. Tidak ada
 // kredensial AI di sisi klien - semua rahasia milik server.
-const BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '');
+// Kosong = origin yang sama (deploy satu layanan); isi VITE_API_URL saat dev.
+const BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
 
 let accessToken = null;
 

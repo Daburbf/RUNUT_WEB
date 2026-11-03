@@ -59,7 +59,7 @@ dan **bukan** hasil pemeriksaan plagiarisme: tidak ada korpus pembanding.
 | Analisis AI | 9Router (endpoint kompatibel OpenAI) melalui `server/src/services/aiProvider.js` |
 | Penyimpanan | Kontrak repository dengan dua adapter: **memori** (bawaan) dan **PostgreSQL** (`pg`) untuk akun & sesi |
 | Dokumen | mammoth (DOCX masuk), pdf-parse (PDF masuk), docx (ekspor DOCX), pdf-lib (ekspor PDF) |
-| Pembayaran | Midtrans Core API + Snap (kartu) lewat `server/src/services/payments.js`; mode simulasi otomatis bila kunci kosong di luar produksi |
+| Pembayaran | Midtrans Core API + Snap (kartu) lewat `server/src/services/payments.js`; tanpa kunci, pembelian ditutup |
 
 <p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
 
@@ -108,9 +108,9 @@ Opsional:
 DATABASE_URL=postgres://postgres:rahasia@localhost:5432/runut   # kosong = memori sementara
 PREMIUM_PRICE_IDR=49000        # harga yang dipakai server saat membuat transaksi
 PREMIUM_DURATION_DAYS=30
-MIDTRANS_SERVER_KEY=           # kosong = mode simulasi (dev) / pembelian ditutup (produksi)
+MIDTRANS_SERVER_KEY=           # wajib: SB-Mid-server-... untuk Sandbox, Mid-server-... untuk Production
 MIDTRANS_CLIENT_KEY=
-MIDTRANS_IS_PRODUCTION=false
+MIDTRANS_IS_PRODUCTION=false   # true hanya dengan kunci Production
 MIDTRANS_QRIS_ACQUIRER=gopay
 PAYMENT_EXPIRY_HOURS=24
 MAIL_HOST=smtp.mailtrap.io     # + MAIL_PORT/MAIL_USER/MAIL_PASS untuk lupa sandi
@@ -147,7 +147,7 @@ npm.cmd run dev
 
 Periksa `http://localhost:3000/api/health`. Nilai yang dilaporkan apa adanya:
 `storage` (adapter aktif), `ai.configured`, `premium.available`/`premium.mode`
-(`midtrans`, `simulator`, atau `unavailable`), `limits.premium_words` (`null` = tanpa batas),
+(`midtrans` atau `unavailable`), `limits.premium_words` (`null` = tanpa batas),
 `mail_configured`.
 
 Alur utama:
@@ -175,8 +175,9 @@ invoice PDF dan riwayat transaksi tersedia di halaman yang sama.
 
 | Mode | Syarat | Perilaku |
 |---|---|---|
-| `midtrans` | `MIDTRANS_SERVER_KEY` terisi | Transaksi nyata lewat Midtrans Core API; kartu lewat Snap; webhook `/api/payments/notify` diverifikasi SHA512 |
-| `simulator` | kunci kosong, `NODE_ENV` bukan produksi | Tanpa uang berpindah; tombol "Simulasikan lunas" hanya ada di mode ini |
+| `midtrans` | `MIDTRANS_SERVER_KEY` terisi | Transaksi diproses lewat Midtrans Core API; kartu lewat Snap; sandbox untuk uji transaksi, production untuk penagihan; webhook `/api/payments/notify` diverifikasi SHA512 |
+| `unavailable` | `MIDTRANS_SERVER_KEY` kosong | Pembelian ditutup; transaksi tidak dapat ditandai lunas |
+| `unavailable` | `MIDTRANS_SERVER_KEY` kosong | Pembelian dinonaktifkan; tidak ada cara manual untuk mengaktifkan Premium |
 | `unavailable` | kunci kosong, `NODE_ENV=production` | Pembelian ditutup (503) - tidak ada Premium aktif tanpa pembayaran nyata |
 
 Nominal dan nomor pesanan selalu dibuat server; isi body hanya `method`. Transisi ke lunas
@@ -188,7 +189,7 @@ idempoten (`markPaidIfPending`), jadi webhook ganda tidak menambah masa aktif du
 
 ```powershell
 cd server
-npm.cmd test          # 34 tes lulus + 1 dilewati, tanpa DB dan tanpa jaringan nyata
+npm.cmd test          # 62 tes lulus + 1 dilewati, tanpa DB PostgreSQL nyata
 cd ..
 npm.cmd run build     # build Vite
 ```
@@ -199,16 +200,18 @@ Tes adapter PostgreSQL ikut berjalan (dan tidak lagi dilewati) kalau ada databas
 $env:RUNUT_TEST_DATABASE_URL='postgres://postgres:sandi@localhost:5432/runut'; npm.cmd test
 ```
 
-Tes backend memakai stub HTTP untuk 9Router, jadi jalur permintaan provider ikut diuji.
+Tes backend memakai stub HTTP lokal untuk 9Router, jadi jalur permintaan provider ikut diuji.
+Tes edge-case mencakup Unicode, tanda baca, offset, payload null, koordinat invalid,
+duplikat, batas panjang output, ranking kosong, dan input rusak.
 Cakupan: statistik & skor deterministik · validasi keluaran AI (menolak koordinat palsu,
 saran berisiko, kategori liar)
 isolasi dokumen antar-pengguna (403) · 503 AI eksplisit · persetujuan AI wajib ·
 batas kata 500 untuk gratis / tanpa batas untuk Premium, pemotongan teks panjang
 (`splitForAi` + `mapLimit`), unduh PDF/DOCX/TXT (PDF dibaca ulang dengan `pdf-lib`),
-keputusan saran + stale position (409), alur bayar mode simulasi (nominal dari server,
+keputusan saran + stale position (409), alur pembayaran terproteksi (nominal dari server,
 lunas idempoten, QR asli tidak dikarang, kepemilikan transaksi), webhook: tanda tangan
 SHA512, nominal, dan status expire.
-endpoint pembayaran nonaktif (501).
+pembelian ditutup tanpa `MIDTRANS_SERVER_KEY`; endpoint simulator dihapus.
 
 <p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
 
@@ -242,8 +245,8 @@ docs/
 - **Dokumen & hasil analisis masih di memori** - hilang saat server dimatikan. Hanya
   akun dan sesi yang bisa disimpan ke PostgreSQL.
 - **Similarity & Penggunaan AI bukan cek plagiarisme.** Tidak ada basis data pembanding.
-- **Premium hanya bisa diaktifkan lewat pembayaran.** Tanpa `MIDTRANS_SERVER_KEY` di luar
-  produksi, pembayaran memakai mode simulasi yang jelas ditandai di halaman Premium.
+- **Premium hanya bisa diaktifkan lewat pembayaran.** Tanpa `MIDTRANS_SERVER_KEY`,
+  pembelian dinonaktifkan di semua lingkungan.
 - **Job analisis bertahan saat pindah halaman, bukan saat halaman dimuat ulang.** Memuat
   ulang browser menghentikan permintaan yang sedang berjalan.
 - **Batas praktis satu dokumen 200.000 karakter** (~30.000 kata); di atas itu server

@@ -1,3 +1,6 @@
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -15,12 +18,13 @@ import {
   deleteDocuments, downloadDocument,
 } from './routes/documents.js';
 import {
-  listPayments, createPaymentHandler, getPayment, paymentQr, simulatePayment,
+  listPayments, createPaymentHandler, getPayment, paymentQr,
   paymentInvoice, paymentNotification,
 } from './routes/payments.js';
 import { paymentInfo } from './services/payments.js';
 import { startRetentionJob } from './services/retention.js';
-import { initStorage, storage } from './repositories/index.js';
+import bcrypt from 'bcryptjs';
+import { initStorage, storage, users } from './repositories/index.js';
 import { getProviderInfo } from './services/aiProvider.js';
 
 export function createApp() {
@@ -104,18 +108,41 @@ export function createApp() {
   app.post('/api/payments/notify', paymentNotification);
   app.get('/api/payments/:orderId/qr', requireAuth, paymentQr);
   app.get('/api/payments/:orderId/invoice', requireAuth, paymentInvoice);
-  app.post('/api/payments/:orderId/simulate', requireAuth, simulatePayment);
   app.get('/api/payments/:orderId', requireAuth, getPayment);
+
+  // Sajikan build frontend bila ada: satu origin, cookie & CORS otomatis cocok.
+  const dist = fileURLToPath(new URL('../../dist', import.meta.url));
+  if (existsSync(dist)) {
+    app.use(express.static(dist));
+    app.get(/^\/(?!api\/)/, (req, res) => res.sendFile(path.join(dist, 'index.html')));
+  }
 
   app.use('/api', notFound);
   app.use(errorHandler);
   return app;
 }
 
+// Demo lokal: DEMO_PREMIUM=1 menyediakan satu akun Premium siap pakai, supaya
+// fitur berbayar bisa diuji tanpa payment gateway. Mati secara bawaan.
+async function seedDemoPremium() {
+  if (!process.env.DEMO_PREMIUM) return;
+  const email = process.env.DEMO_EMAIL || 'premium@runut.local';
+  const password = process.env.DEMO_PASSWORD || 'Premium12345!';
+  const days = Number(process.env.DEMO_PREMIUM_DAYS || 30);
+  const user = (await users.findByEmail(email)) || (await users.create({
+    name: 'Premium Demo',
+    email,
+    password_hash: await bcrypt.hash(password, 10),
+  }));
+  if (!user.is_premium) await users.extendPremium(user.id, days);
+  console.log(`[demo] akun premium: ${email} / ${password}`);
+}
+
 export async function start() {
   for (const problem of checkStartupConfig()) console.warn('[config] ' + problem);
   const info = await initStorage();
   console.log(`[runut] penyimpanan: ${info.detail}`);
+  await seedDemoPremium();
   const app = createApp();
   startRetentionJob();
   return app.listen(config.port, () => {

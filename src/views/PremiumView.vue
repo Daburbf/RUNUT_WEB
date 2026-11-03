@@ -31,7 +31,6 @@ const fmtDate = (t) => (t ? new Date(t).toLocaleString('id-ID', { dateStyle: 'me
 
 const price = computed(() => fmtIdr(info.value?.price_idr || 0))
 const days = computed(() => info.value?.duration_days || 30)
-const mode = computed(() => info.value?.mode || 'unavailable')
 const available = computed(() => Boolean(info.value?.available))
 const methods = computed(() => info.value?.methods || [])
 const isPremium = computed(() => Boolean(auth.user?.is_premium))
@@ -146,19 +145,6 @@ async function openOrder(row) {
   if (row.status === 'pending') await check()
 }
 
-async function simulate() {
-  if (!order.value) return
-  checking.value = true
-  try {
-    const { payment } = await api(`/api/payments/${order.value.order_id}/simulate`, { method: 'POST', body: {} })
-    apply(payment)
-  } catch (e) {
-    error.value = e.message
-  } finally {
-    checking.value = false
-  }
-}
-
 async function invoice(row) {
   try {
     await downloadFile(`/api/payments/${row.order_id}/invoice`, `invoice-${row.order_id}.pdf`)
@@ -211,9 +197,6 @@ onBeforeUnmount(() => {
     </p>
     <p v-else-if="!loading && !available" class="mt-6 border-2 border-black bg-[#FF3000] px-4 py-3 text-sm font-bold uppercase tracking-wide text-white">
       <span class="text-white">■</span> Pembelian sedang ditutup: payment gateway belum dikonfigurasi di server.
-    </p>
-    <p v-else-if="mode === 'simulator'" class="mt-6 border-2 border-black bg-[#F2F2F2] px-4 py-3 text-sm font-bold uppercase tracking-wide">
-      <span class="text-[#FF3000]">■</span> Aktivasi Premium langsung aktif dan tidak menagih pembayaran.
     </p>
 
     <p v-if="notice" class="mt-4 flex items-center gap-3 border-2 border-black bg-black px-4 py-3 text-sm font-bold uppercase tracking-wide text-white">
@@ -328,9 +311,6 @@ onBeforeUnmount(() => {
       <div class="mt-5 flex flex-wrap gap-2 border-t-2 border-black pt-4">
         <BaseButton v-if="order.status === 'pending'" size="sm" :disabled="checking" @click="check(false)">
           <i :class="['fa-solid', checking ? 'fa-circle-notch fa-spin' : 'fa-rotate-right']"></i>Saya sudah bayar, periksa
-        </BaseButton>
-        <BaseButton v-if="order.status === 'pending' && mode === 'simulator'" variant="accent" size="sm" :disabled="checking" @click="simulate">
-          <i class="fa-solid fa-bolt"></i>Aktifkan sekarang
         </BaseButton>
         <BaseButton v-if="order.status === 'paid'" variant="secondary" size="sm" @click="invoice(order)">
           <i class="fa-solid fa-file-invoice"></i>Unduh invoice PDF
