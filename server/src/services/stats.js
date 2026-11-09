@@ -171,7 +171,7 @@ export function computeScores(text, stats = computeStats(text)) {
     similarity: {
       percent: similarity,
       label: 'Similarity',
-      note: 'Ukuran tingkat kesamaan antara teks dengan teks atau data lain di dalam basis data. Sering dikaitkan dengan alat deteksi plagiarisme seperti Turnitin Similarity.',
+      note: 'Indikator deterministik dari pengulangan kata, frasa, dan pembuka kalimat di dalam teks ini. Tidak mencocokkan teks dengan basis data dokumen lain.',
       signals: [
         { key: 'repeat_content', label: 'Kata isi yang berulang', percent: pct(s.repeat_content) },
         { key: 'repeat_phrase', label: 'Frasa yang berulang', percent: pct(s.repeat_phrase) },
@@ -181,7 +181,7 @@ export function computeScores(text, stats = computeStats(text)) {
     ai_usage: {
       percent: ai_usage,
       label: 'Penggunaan AI',
-      note: 'Dihitung dari keseragaman panjang kalimat, pengulangan frasa, dan jumlah kalimat pendek.',
+      note: 'Dihitung dari keseragaman panjang kalimat, pengulangan frasa, dan jumlah kalimat pendek. Bukan bukti pasti bahwa teks dibuat AI.',
       signals: [
         { key: 'sentence_uniformity', label: 'Panjang kalimat seragam', percent: pct(a.sentence_uniformity) },
         { key: 'repeat_opening', label: 'Pembuka berulang', percent: pct(a.repeat_opening) },

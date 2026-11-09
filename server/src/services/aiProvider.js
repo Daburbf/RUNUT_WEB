@@ -16,20 +16,34 @@ const PROVIDERS = {
   '9router': {
     label: '9Router',
     requiresApiKey: true,
+    defaultBaseUrl: 'http://localhost:20128/v1',
+    endpoint: (baseUrl) => `${baseUrl}/chat/completions`,
+  },
+  'gemini': {
+    label: 'Google Gemini',
+    requiresApiKey: true,
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    endpoint: (baseUrl) => `${baseUrl}/chat/completions`,
+  },
+  'openai': {
+    label: 'OpenAI',
+    requiresApiKey: true,
+    defaultBaseUrl: 'https://api.openai.com/v1',
     endpoint: (baseUrl) => `${baseUrl}/chat/completions`,
   },
 };
 
 export function getProviderInfo(env = process.env) {
   const provider = String(env.AI_PROVIDER || '9router').toLowerCase();
-  const baseUrl = String(env.AI_BASE_URL || '').replace(/\/$/, '');
   const impl = PROVIDERS[provider];
+  const baseUrl = String(env.AI_BASE_URL || impl?.defaultBaseUrl || '').replace(/\/$/, '');
+  const model = env.AI_MODEL || (provider === 'gemini' ? 'gemini-3.1-flash-lite' : '');
   return {
     provider,
     baseUrl,
-    model: env.AI_MODEL || '',
-    timeoutMs: Number(env.AI_TIMEOUT_MS || 10000),
-    configured: Boolean(impl && baseUrl && env.AI_MODEL && (!impl.requiresApiKey || env.AI_API_KEY)),
+    model,
+    timeoutMs: Number(env.AI_TIMEOUT_MS || 90000),
+    configured: Boolean(impl && baseUrl && model && (!impl.requiresApiKey || env.AI_API_KEY)),
   };
 }
 
@@ -99,6 +113,37 @@ function explainHttpStatus(status, body) {
   return new AiError(`Provider AI menjawab HTTP ${status}. ${String(body).slice(0, 200)}`, { code: 'AI_HTTP_' + status, status: 502, retryable: true });
 }
 
+function calibrateIssues(parsed, text) {
+  if (!parsed || !Array.isArray(parsed.issues) || typeof text !== 'string') return parsed;
+  for (const issue of parsed.issues) {
+    if (!issue || typeof issue !== 'object' || typeof issue.text !== 'string' || !issue.text) continue;
+    const t = issue.text;
+    const start = Number(issue.start);
+    if (Number.isInteger(start) && text.slice(start, start + t.length) === t) {
+      issue.end = start + t.length;
+      continue;
+    }
+    let best = -1;
+    let minDiff = Infinity;
+    let from = 0;
+    while (from < text.length) {
+      const idx = text.indexOf(t, from);
+      if (idx === -1) break;
+      const diff = Math.abs(idx - (Number.isInteger(start) ? start : 0));
+      if (diff < minDiff) {
+        minDiff = diff;
+        best = idx;
+      }
+      from = idx + 1;
+    }
+    if (best !== -1 && minDiff <= 60) {
+      issue.start = best;
+      issue.end = best + t.length;
+    }
+  }
+  return parsed;
+}
+
 // Parameter permintaan sengaja minimal (model, messages, temperature) karena
 // tidak semua model mendukung parameter tambahan seperti response_format.
 export async function analyzeWithProvider(text, { maxIssues = 30, evidence = '' } = {}, env = process.env) {
@@ -138,7 +183,7 @@ export async function analyzeWithProvider(text, { maxIssues = 30, evidence = '' 
     throw new AiError('Respons model kosong.', { code: 'AI_EMPTY', retryable: false });
   }
   return {
-    parsed: extractJson(content),
+    parsed: calibrateIssues(extractJson(content), text),
     latencyMs: Date.now() - started,
     provider: info.provider,
     model: info.model,

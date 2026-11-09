@@ -1,4 +1,4 @@
-/* SPA fallback untuk Netlify & host statis lain.
-   Tanpa ini, refresh/direct-link ke /hasil, /analisis, dsb. jadi 404/blank
-   karena server mencari file fisik, bukan route Vue. */
-/index.html 200
+# SPA fallback untuk host statis (Netlify, Cloudflare Pages, dsb).
+# Router memakai hash history, jadi aturan ini hanya jaring pengaman
+# untuk path yang diketik tanpa awalan '#/'.
+/* /index.html 200

@@ -4,6 +4,7 @@ dist/
 *.log
 .env
 .env.local
+.env*.local
 server/.env
 server/.env.local
 server/.env.backup-*

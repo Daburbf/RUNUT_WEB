@@ -48,15 +48,21 @@ body {
   content: attr(data-label); display: block; height: 1.5em; line-height: 1.5em; color: #ff3000;
 }
 
-/* ---- Sorotan masalah: garis bawah tebal, tanpa rounded ---- */
+/* ---- Sorotan masalah: latar lembut + garis bawah warna kategori ---- */
 mark.swiss-mark {
   border-radius: 0;
   padding: 0 1px;
   cursor: pointer;
   color: inherit;
-  box-shadow: inset 0 -3px 0 currentColor;
+  background: transparent;
   transition: background-color 150ms linear;
 }
+mark.swiss-mark:hover { outline: 2px solid rgba(0, 0, 0, 0.2); outline-offset: 1px; }
+mark.swiss-mark:focus-visible { outline: 2px solid #FF3000; outline-offset: 2px; }
+
+/* ---- Ringkasan bawaan <details> tanpa penanda bawaan ---- */
+summary.summary-plain::-webkit-details-marker { display: none; }
+summary.summary-plain::marker { content: ''; }
 
 /* ---- Fokus aksesibel: ring merah 2px ---- */
 :focus-visible { outline: 2px solid #ff3000; outline-offset: 2px; }

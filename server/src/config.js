@@ -1,5 +1,11 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config();
 
 const ephemeral = [];
 
@@ -31,14 +37,13 @@ export const config = {
     refreshDays: Number(process.env.REFRESH_TOKEN_DAYS || 30),
   },
 
-  // Provider AI aktif: 9Router (endpoint kompatibel OpenAI).
-  // AI_MODEL tidak punya nilai bawaan - tidak ada ID model yang dikarang.
+  // Provider AI aktif: gemini / 9router / openai (endpoint kompatibel OpenAI).
   ai: {
     provider: (process.env.AI_PROVIDER || '9router').toLowerCase(),
-    baseUrl: (process.env.AI_BASE_URL || 'http://localhost:20128/v1').replace(/\/$/, ''),
+    baseUrl: (process.env.AI_BASE_URL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (process.env.AI_PROVIDER?.toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:20128/v1'))).replace(/\/$/, ''),
     apiKey: process.env.AI_API_KEY || '',
-    model: process.env.AI_MODEL || '',
-    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 10000),
+    model: process.env.AI_MODEL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : ''),
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 90000),
   },
 
   // Harga Premium dipakai seragam oleh halaman Premium dan footer website.

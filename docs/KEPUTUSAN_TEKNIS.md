@@ -172,11 +172,11 @@ keputusan yang diambil dan alasannya. Tag `(D1)` ... `(D9)` dirujuk dari kode.
   SVG lokal (bukan QRIS asli, tidak bisa dipindai), dan tombol "Periksa status" menandai lunas
   lewat `syncOutcome` yang sama sehingga premium tidak pernah digandakan.
 - **Tarif:** `PREMIUM_PRICE_IDR` tetap prioritas; bila kosong, mode simulasi memakai
-  `PREMIUM_DEMO_PRICE_IDR` (bawaan 25000) dan UI menandainya "tarif simulasi".
+  `PREMIUM_SIMULATION_PRICE_IDR` (bawaan 25000) dan UI menandainya "tarif simulasi".
 - **Batas jujur:** tidak ada uang berpindah, tidak ada panggilan Midtrans. Webhook
   `/api/payments/notify` tetap menjawab 503 tanpa server key, jadi tidak ada jalur verifikasi
   palsu. Jalur Midtrans asli (D9) tidak berubah saat kredensial diisi.
-- **Status:** hanya untuk demo/pengembangan - bukan alur pembayaran produksi. Data tetap
+- **Status:** hanya untuk pengembangan lokal - bukan alur pembayaran produksi. Data tetap
   hilang saat server dimulai ulang.
 
 ## D13 - Pembayaran dinonaktifkan (menggantikan D9 dan D9b) - **DIGANTI oleh D15**

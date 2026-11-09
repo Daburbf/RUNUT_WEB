@@ -122,27 +122,39 @@ export function createApp() {
   return app;
 }
 
-// Demo lokal: DEMO_PREMIUM=1 menyediakan satu akun Premium siap pakai, supaya
-// fitur berbayar bisa diuji tanpa payment gateway. Mati secara bawaan.
-async function seedDemoPremium() {
-  if (!process.env.DEMO_PREMIUM) return;
-  const email = process.env.DEMO_EMAIL || 'premium@runut.local';
-  const password = process.env.DEMO_PASSWORD || 'Premium12345!';
-  const days = Number(process.env.DEMO_PREMIUM_DAYS || 30);
-  const user = (await users.findByEmail(email)) || (await users.create({
-    name: 'Premium Demo',
-    email,
-    password_hash: await bcrypt.hash(password, 10),
+// Inisialisasi akun siap pakai (Pro & Gratis), supaya fitur berbayar
+// dan fitur gratis bisa langsung digunakan tanpa registrasi manual.
+async function seedInitialAccounts() {
+  if (!process.env.SEED_ACCOUNTS) return;
+
+  // 1. Akun Pro / Premium
+  const proEmail = process.env.PRO_EMAIL || 'premium@runut.local';
+  const proPassword = process.env.PRO_PASSWORD || 'Premium12345!';
+  const days = Number(process.env.PRO_DAYS || 30);
+  const proUser = (await users.findByEmail(proEmail)) || (await users.create({
+    name: 'Pengguna Pro',
+    email: proEmail,
+    password_hash: await bcrypt.hash(proPassword, 10),
   }));
-  if (!user.is_premium) await users.extendPremium(user.id, days);
-  console.log(`[demo] akun premium: ${email} / ${password}`);
+  if (!proUser.is_premium) await users.extendPremium(proUser.id, days);
+  console.log(`[auth] akun pro/premium: ${proEmail} / ${proPassword}`);
+
+  // 2. Akun Biasa (Gratis)
+  const freeEmail = process.env.FREE_EMAIL || 'free@runut.local';
+  const freePassword = process.env.FREE_PASSWORD || 'Free12345!';
+  (await users.findByEmail(freeEmail)) || (await users.create({
+    name: 'Pengguna Gratis',
+    email: freeEmail,
+    password_hash: await bcrypt.hash(freePassword, 10),
+  }));
+  console.log(`[auth] akun gratis: ${freeEmail} / ${freePassword}`);
 }
 
 export async function start() {
   for (const problem of checkStartupConfig()) console.warn('[config] ' + problem);
   const info = await initStorage();
   console.log(`[runut] penyimpanan: ${info.detail}`);
-  await seedDemoPremium();
+  await seedInitialAccounts();
   const app = createApp();
   startRetentionJob();
   return app.listen(config.port, () => {
