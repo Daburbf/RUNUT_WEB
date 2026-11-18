@@ -272,8 +272,38 @@ keputusan yang diambil dan alasannya. Tag `(D1)` ... `(D9)` dirujuk dari kode.
 - **Konteks:** analisis berhenti dan formulir kembali kosong saat pengguna berpindah
   halaman karena seluruh state berada di `AnalyzeView.vue` yang di-unmount.
 - **Keputusan:** `src/store/analysis.js` memegang status job (idle/running/done/error),
-  penghitung detik, hasil terakhir, dan draf teks. `AppHeader` menampilkan penanda
-  berjalan/selesai dengan tautan ke hasil. Navigasi ke halaman hasil hanya dilakukan bila
-  komponen masih terpasang; bila tidak, pengguna membuka hasil dari penanda header.
-- **Batas jujur:** job hidup di memori tab. Memuat ulang browser (F5) menghentikan job;
-  melanjutkan setelah reload butuh penyimpanan job di server dan belum dibuat.
+  penghitung detik, hasil terakhir, dan draf teks (disimpan ke `sessionStorage` agar
+  bertahan saat pengguna ke halaman Pembelian Token). `AppHeader` menampilkan penanda
+  berjalan/selesai dengan tautan ke hasil.
+
+## D20 - Transformasi Bisnis ke Sistem Token Progresif & Ledger Atomik (Menggantikan Gratis/Premium)
+
+- **Konteks:** menggantikan model langganan bulanan Gratis (batas 500 kata, maksimal 3
+  masalah, saran terkunci) dan Premium (Rp49.000/30 hari) menjadi sistem saldo token.
+- **Tarif Analisis Progresif (`server/src/services/tokens.js`):**
+  - Dihitung di backend berdasarkan jumlah kata sebenarnya (`countWords(text)` setelah
+    ekstraksi TXT/DOCX/PDF) dengan rumus:
+    `cost = Math.ceil(wordCount / 1000)`
+  - 1–1.000 kata = 1 token; 1.001–2.000 kata = 2 token; 2.001–3.000 kata = 3 token;
+    setiap tambahan maksimal 1.000 kata = +1 token. Minimal 20 kata per analisis.
+  - Seluruh hasil analisis (semua masalah, penjelasan, saran perbaikan, terapkan sekaligus,
+    unduhan PDF/DOCX/TXT) langsung terbuka penuh tanpa ada yang dikunci.
+- **Paket Pembelian Token (`TOKEN_PACKAGES`):**
+  - **Hemat:** 5 token = Rp5.000 (Rp1.000/token)
+  - **Populer:** 10 token = Rp9.000 (Rp900/token)
+  - **Lebih Hemat:** 20 token = Rp16.000 (Rp800/token)
+  - Pembayaran diproses melalui Midtrans (`services/payments.js`). Nominal dan jumlah token
+    ditentukan sepenuhnya oleh server.
+- **Ledger Token & Operasi Atomik (`token_transactions`):**
+  - Tabel `token_transactions` mencatat setiap perubahan saldo (`purchase`, `usage`, `refund`),
+    `amount`, `balance_after`, `reference_type`, `reference_id`, dan `idempotency_key`.
+  - Pemotongan saldo dilakukan secara atomik (`WHERE id = $1 AND token_balance >= $2`) sebelum
+    menjalankan AI sehingga permintaan bersamaan tidak pernah membuat saldo negatif.
+  - Jika analisis gagal sepenuhnya karena gangguan provider AI/sistem, token dikembalikan
+    (`refund`) secara otomatis.
+- **Navigasi & UX Hasil Analisis:**
+  - Navbar membedakan tampilan guest (Beranda, Tentang, Masuk, Daftar) dan pengguna login
+    (Beranda, Analisis, Riwayat, Isi Token, Saldo Token, Akun, Keluar).
+  - Halaman Hasil dilengkapi Sticky Navigation Bar (`#ringkasan`, `#tulisan-asli`, `#temuan`,
+    `#perbaikan`, `#unduh`), Sticky Action Bar, dan notifikasi melayang yang tidak menggeser
+    posisi scroll.

@@ -7,15 +7,13 @@
   <h1 align="center">Runut</h1>
 
   <p align="center">
-    Website untuk menganalisis dan memperbaiki pola tulisan berbahasa Indonesia:
-    tempel teks, lihat bagian yang janggal beserta sebabnya, lalu bereskan satu per satu.
+    Website untuk menganalisis dan memperbaiki pola tulisan berbahasa Indonesia berbasis sistem token:
+    tempel teks, periksa jumlah kata &amp; biaya token, tinjau seluruh temuan beserta saran perbaikan, lalu unduh hasilnya.
     <br />
     <br />
     <a href="docs/KEPUTUSAN_TEKNIS.md">Keputusan teknis</a>
     ·
     <a href="docs/PERUBAHAN_SRS_SDD.md">Perubahan SRS &amp; SDD</a>
-    ·
-    <a href="PANDUAN_JALANKAN_LOKAL.txt">Panduan menjalankan lokal</a>
   </p>
 </div>
 
@@ -23,31 +21,77 @@
   <summary>Daftar isi</summary>
   <ol>
     <li><a href="#tentang-proyek">Tentang proyek</a></li>
+    <li><a href="#sistem-token--tarif-analisis">Sistem token &amp; tarif analisis</a></li>
+    <li><a href="#paket-pembelian-token">Paket pembelian token</a></li>
     <li><a href="#dibangun-dengan">Dibangun dengan</a></li>
     <li><a href="#memulai">Memulai</a></li>
-    <li><a href="#penggunaan">Penggunaan</a></li>
+    <li><a href="#struktur-database">Struktur database</a></li>
+    <li><a href="#endpoint-api">Endpoint API</a></li>
+    <li><a href="#cara-kerja-pembayaran-midtrans">Cara kerja pembayaran Midtrans</a></li>
     <li><a href="#pengujian">Pengujian</a></li>
-    <li><a href="#struktur-proyek">Struktur proyek</a></li>
-    <li><a href="#batasan-jujur">Batasan jujur</a></li>
-    <li><a href="#yang-ditunda">Yang ditunda</a></li>
-    <li><a href="#pemecahan-masalah">Pemecahan masalah</a></li>
     <li><a href="#keamanan--privasi">Keamanan &amp; privasi</a></li>
   </ol>
 </details>
 
 ## Tentang proyek
 
-Runut menandai **kebiasaan menulis** yang membuat tulisan terasa kaku atau generik -
-bukan salah ketik. Enam kategori diperiksa: pengulangan kata, pola kalimat seragam,
-struktur paragraf monoton, kata transisi berulang, kata tidak baku, dan gaya yang
-tidak konsisten. Setiap temuan disertai kutipan, penjelasan sebab, dan saran perbaikan
-yang bisa diterima atau ditolak **satu per satu** - tidak ada perubahan otomatis.
+Runut menandai **kebiasaan menulis** yang membuat tulisan terasa kaku atau generik —
+bukan sekadar salah ketik. Enam kategori diperiksa:
+1. **Pengulangan Kata (`repetition`)**
+2. **Pola Kalimat (`sentence_pattern`)**
+3. **Struktur Seragam (`uniform_structure`)**
+4. **Transisi (`transition`)**
+5. **Tingkat Formalitas (`formality`)**
+6. **Konsistensi Gaya (`style_consistency`)**
 
-Halaman hasil juga menampilkan **Similarity %** dan **Penggunaan AI %**. Keduanya
-dihitung server secara deterministik dari teks itu sendiri (bukan keluaran model AI),
-dan **bukan** hasil pemeriksaan plagiarisme: tidak ada korpus pembanding.
+Setiap analisis menggunakan **saldo token** sesuai panjang tulisan. Tidak ada langganan bulanan
+dan tidak ada fitur atau saran perbaikan yang dikunci: seluruh temuan, penjelasan, saran perbaikan,
+perbandingan teks, dan unduhan (PDF, DOCX, TXT) terbuka penuh pada setiap analisis.
 
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
+Halaman hasil juga menampilkan **Similarity %** dan **Penggunaan AI %** yang dihitung server secara
+deterministik dari pola di dalam teks itu sendiri.
+
+---
+
+## Sistem token & tarif analisis
+
+Saat pengguna baru mendaftar, saldo awal adalah **0 token**.
+
+Biaya analisis dihitung di backend (`server/src/services/tokens.js`) secara progresif berdasarkan
+jumlah kata sebenarnya (termasuk hasil ekstraksi teks untuk unggahan DOCX dan PDF) menggunakan rumus:
+
+```js
+cost = Math.ceil(wordCount / 1000)
+```
+
+| Jumlah Kata | Biaya Token |
+|---|---|
+| Kurang dari 20 kata | Tidak dapat dianalisis (0 token dipotong) |
+| 20 – 1.000 kata | **1 token** |
+| 1.001 – 2.000 kata | **2 token** |
+| 2.001 – 3.000 kata | **3 token** |
+| 3.001 – 4.000 kata | **4 token** |
+| Setiap tambahan maks. 1.000 kata | **+1 token** (mis. 7.200 kata = 8 token) |
+
+Ketentuan pemotongan & pengembalian (refund) token:
+- Mengetik teks, mengunggah dokumen, atau memeriksa estimasi (`POST /api/analysis/estimate`) **tidak** mengurangi token.
+- Token dipotong secara **atomik** ketika pengguna memulai analisis (`POST /api/analysis`) setelah validasi teks, batas karakter (maks. 200.000 karakter / 5 MB), dan persetujuan AI (`ai_consent: true`) terpenuhi.
+- Jika saldo tidak mencukupi, analisis dihentikan (`HTTP 402 INSUFFICIENT_TOKENS`) tanpa memanggil AI, dan pengguna diarahkan ke halaman **Isi Token** dengan draf tulisan tetap tersimpan.
+- Jika analisis gagal sepenuhnya karena gangguan provider AI atau sistem, seluruh token yang telah dipotong **dikembalikan otomatis (refund)** ke saldo pengguna dan dicatat di ledger `token_transactions`.
+
+---
+
+## Paket pembelian token
+
+Tersedia tiga paket pembelian token di halaman **Pembelian Token (`/#/token`)**:
+
+| Paket | Jumlah Token | Harga Total | Harga per Token |
+|---|---|---|---|
+| **Hemat** (`hemat`) | 5 Token | Rp5.000 | Rp1.000 / token |
+| **Populer** (`populer`) | 10 Token | Rp9.000 | Rp900 / token |
+| **Lebih Hemat** (`lebih_hemat`) | 20 Token | Rp16.000 | Rp800 / token |
+
+---
 
 ## Dibangun dengan
 
@@ -56,243 +100,145 @@ dan **bukan** hasil pemeriksaan plagiarisme: tidak ada korpus pembanding.
 | Frontend | Vue 3, Vite, Vue Router (hash history), Tailwind CSS, Font Awesome |
 | Backend | Node.js 20+, Express 4, multer, helmet, express-rate-limit |
 | Autentikasi | bcryptjs, JWT access token (di memori browser), refresh cookie HttpOnly + rotasi |
-| Analisis AI | 9Router (endpoint kompatibel OpenAI) melalui `server/src/services/aiProvider.js` |
-| Penyimpanan | Kontrak repository dengan dua adapter: **memori** (bawaan) dan **PostgreSQL** (`pg`) untuk akun & sesi |
+| Analisis AI | Google Gemini / 9Router / OpenAI (endpoint kompatibel OpenAI) melalui `server/src/services/aiProvider.js` |
+| Penyimpanan | PostgreSQL (`pg`) untuk production & persistensi penuh; berkas lokal `.data/runut-storage.json` untuk pengembangan tanpa PostgreSQL |
 | Dokumen | mammoth (DOCX masuk), pdf-parse (PDF masuk), docx (ekspor DOCX), pdf-lib (ekspor PDF) |
-| Pembayaran | Midtrans Core API + Snap (kartu) lewat `server/src/services/payments.js`; tanpa kunci, pembelian ditutup |
+| Pembayaran | Midtrans Core API + Snap (kartu) lewat `server/src/services/payments.js` |
 
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
+---
 
 ## Memulai
-
-### Prasyarat
-
-| Kebutuhan | Keterangan |
-|---|---|
-| Node.js 20+ | teruji pada Node 24 |
-| 9Router | `AI_API_KEY` + **ID model persis dari akun Anda** (`AI_MODEL` wajib diisi, tidak ada bawaan) |
-| PostgreSQL | opsional. Dipakai hanya untuk menyimpan akun & sesi |
-| SMTP | opsional. Tanpa ini, fitur lupa sandi menjawab 503 eksplisit |
 
 ### Instalasi
 
 ```powershell
-# Backend
+# 1. Backend
 cd server
 npm.cmd install
 Copy-Item .env.example .env
-notepad .env          # isi AI_API_KEY dan AI_MODEL minimal
 
-# Frontend (terminal lain, dari root repo)
+# 2. Frontend (dari root repo)
+cd ..
 npm.cmd install
 ```
 
-Di PowerShell, `npm` bisa diblokir ExecutionPolicy. Pakai `npm.cmd`; bila masih gagal
-panggil langsung `node "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js" install`.
-
 ### Konfigurasi `server/.env`
 
-Minimum agar bisa daftar, masuk, dan menganalisis:
-
 ```env
-JWT_ACCESS_SECRET=<acak min 32 karakter>   # kosong = kunci sementara, sesi batal saat restart
-AI_PROVIDER=9router
-AI_BASE_URL=http://localhost:20128/v1
-AI_API_KEY=<dari dashboard 9Router>
-AI_MODEL=<ID model persis dari akun 9Router - jangan dikarang>
-```
+PORT=3000
+NODE_ENV=development
+FRONTEND_URL=http://localhost:5173
 
-Opsional:
+# Wajib di production (PostgreSQL)
+DATABASE_URL=postgres://postgres:rahasia@localhost:5432/runut
 
-```env
-DATABASE_URL=postgres://postgres:rahasia@localhost:5432/runut   # kosong = memori sementara
-PREMIUM_PRICE_IDR=49000        # harga yang dipakai server saat membuat transaksi
-PREMIUM_DURATION_DAYS=30
-MIDTRANS_SERVER_KEY=           # wajib: SB-Mid-server-... untuk Sandbox, Mid-server-... untuk Production
-MIDTRANS_CLIENT_KEY=
-MIDTRANS_IS_PRODUCTION=false   # true hanya dengan kunci Production
+JWT_ACCESS_SECRET=<acak minimal 32 karakter>
+JWT_ACCESS_TTL=1h
+REFRESH_TOKEN_DAYS=30
+
+# Provider AI
+AI_PROVIDER=gemini
+AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+AI_API_KEY=<kunci API Anda>
+AI_MODEL=gemini-3.1-flash-lite
+AI_TIMEOUT_MS=90000
+
+# Midtrans Payment Gateway
+MIDTRANS_SERVER_KEY=SB-Mid-server-...
+MIDTRANS_CLIENT_KEY=SB-Mid-client-...
+MIDTRANS_IS_PRODUCTION=false
 MIDTRANS_QRIS_ACQUIRER=gopay
 PAYMENT_EXPIRY_HOURS=24
-MAIL_HOST=smtp.mailtrap.io     # + MAIL_PORT/MAIL_USER/MAIL_PASS untuk lupa sandi
-FRONTEND_URL=http://localhost:5173
 ```
 
-Generate secret acak:
-`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
-
-Frontend (opsional, `.env` di root repo): `VITE_API_URL=http://localhost:3000`
-
-### PostgreSQL untuk akun & sesi
-
-1. Buat database, misal `runut`.
-2. Isi `DATABASE_URL` di `server/.env`.
-3. Jalankan server. Tabel `users` dan `refresh_tokens` **dibuat otomatis** saat koneksi
-   pertama berhasil (`create table if not exists`).
-
-Bila `DATABASE_URL` diisi tetapi database tidak terjangkau, server **tetap hidup** dengan
-adapter memori dan alasan kegagalannya dicatat di log serta `GET /api/health` (`storage`).
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
-
-## Penggunaan
+### Menjalankan Server Secara Lokal
 
 ```powershell
-# Terminal 1 - backend (http://localhost:3000)
+# Terminal 1 - Backend API (http://localhost:3000)
 cd server
 node src/index.js
 
-# Terminal 2 - frontend (http://localhost:5173)
+# Terminal 2 - Frontend Vite (http://localhost:5173)
 npm.cmd run dev
 ```
 
-Periksa `http://localhost:3000/api/health`. Nilai yang dilaporkan apa adanya:
-`storage` (adapter aktif), `ai.configured`, `premium.available`/`premium.mode`
-(`midtrans` atau `unavailable`), `limits.premium_words` (`null` = tanpa batas),
-`mail_configured`.
+---
 
-Alur utama:
+## Struktur database
 
-1. **Daftar → Masuk** (akun disimpan di PostgreSQL bila `DATABASE_URL` diisi).
-2. **Analisis**: tempel teks (≥20 kata) atau unggah TXT/DOCX/PDF ≤5 MB. Teks dikirim ke
-   layanan AI yang dikonfigurasi server saat tombol analisis ditekan. Proses berjalan di
-   store global: pindah halaman tidak menghentikannya, dan penanda di header menunjukkan
-   detik berjalan sampai hasil siap.
-3. **Hasil**: statistik tulisan, panel **Similarity & penggunaan AI**, teks bersorotan.
-   Akun gratis melihat maksimal 3 masalah; saran perbaikan dan teks hasil perbaikan terkunci.
-4. **Perbaiki**: Premium langsung menerima laporan yang sudah diperbaiki otomatis (saran
-   berisiko dilewati). Saran bisa diterima/ditolak satu per satu, diterapkan sekaligus,
-   dipulihkan ke teks asli, lalu diunduh sebagai **PDF**, DOCX, atau TXT.
-5. **Riwayat**: cari, buka detail, ganti judul, hapus satu atau banyak (dengan konfirmasi).
-6. **Lupa sandi**: minta tautan lewat email (berlaku ≤30 menit) - butuh SMTP.
+Skema dibuat dan dimigrasikan secara otomatis (`create table if not exists` dan `alter table ... add column if not exists`) saat server terhubung ke PostgreSQL (`server/src/repositories/postgres.js`):
 
-### Premium & pembayaran
+1. **`users`**: `id`, `name`, `email`, `password_hash`, `token_balance` (default `0`), `reset_token_hash`, `reset_token_expires_at`, `created_at`, `updated_at` (kolom lama `is_premium`, `premium_until` dipertahankan untuk kompatibilitas).
+2. **`token_transactions`** (Ledger Token): `id`, `user_id`, `type` (`purchase` | `usage` | `refund`), `amount` (`+N` atau `-N`), `balance_after`, `description`, `reference_type`, `reference_id`, `idempotency_key` (unique per user), `meta` (JSONB), `created_at`.
+3. **`payments`**: `id`, `user_id`, `order_id` (unique), `package_id`, `package_label`, `token_amount`, `method`, `method_label`, `channel`, `amount`, `status`, `provider`, `provider_ref`, `instructions` (JSONB), `expires_at`, `paid_at`, `created_at`, `updated_at`.
+4. **`documents`**: `id`, `user_id`, `title`, `original_text`, `revised_text`, `word_count`, `token_cost`, `file_name`, `status`, `expires_at`, `last_analyzed_at`, `created_at`, `updated_at`.
+5. **`analysis_results`**: `id`, `document_id`, `stats` (JSONB), `locked` (`false`), `token_cost`, `idempotency_key`, `ai_provider`, `ai_model`, `ai_latency_ms`, `ai_status`, `created_at`.
+6. **`issues`**: `id`, `analysis_id`, `category`, `start_pos`, `end_pos`, `snippet`, `explanation`, `suggestion`, `needs_manual_review`, `review_reasons`, `evidence`, `decision`, `created_at`, `updated_at`.
+7. **`refresh_tokens`**: `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `revoked_at`, `created_at`.
 
-Satu alur, tanpa AI: pilih metode (QRIS, BCA/BNI/BRI/Permata Virtual Account, GoPay,
-ShopeePay, kartu kredit/debit, Alfamart, Indomaret) -> server membuat nomor pesanan dan
-nominal Rp49.000 sendiri -> halaman menampilkan instruksi (QR/nomor VA/kode bayar/deeplink)
--> status diperiksa otomatis tiap 5 detik -> Premium aktif setelah pembayaran diterima ->
-invoice PDF dan riwayat transaksi tersedia di halaman yang sama.
+---
 
-| Mode | Syarat | Perilaku |
+## Endpoint API
+
+| Metode & Path | Auth | Deskripsi |
 |---|---|---|
-| `midtrans` | `MIDTRANS_SERVER_KEY` terisi | Transaksi diproses lewat Midtrans Core API; kartu lewat Snap; sandbox untuk uji transaksi, production untuk penagihan; webhook `/api/payments/notify` diverifikasi SHA512 |
-| `unavailable` | `MIDTRANS_SERVER_KEY` kosong | Pembelian ditutup; transaksi tidak dapat ditandai lunas |
-| `unavailable` | `MIDTRANS_SERVER_KEY` kosong | Pembelian dinonaktifkan; tidak ada cara manual untuk mengaktifkan Premium |
-| `unavailable` | kunci kosong, `NODE_ENV=production` | Pembelian ditutup (503) - tidak ada Premium aktif tanpa pembayaran nyata |
+| `GET /api/health` | Publik | Status penyimpanan, konfigurasi AI, paket token, dan batas sistem |
+| `POST /api/auth/register` | Publik | Registrasi pengguna baru (saldo awal 0 token) |
+| `POST /api/auth/login` | Publik | Masuk dan menerbitkan access token + HttpOnly refresh cookie |
+| `POST /api/auth/refresh` | Cookie | Rotasi refresh token dan pemulihan sesi |
+| `POST /api/auth/logout` | Publik | Mencabut sesi refresh token |
+| `GET /api/auth/me` | Bearer | Profil pengguna beserta `token_balance`, `total_purchased`, `total_used` |
+| `GET /api/tokens` | Bearer | Ringkasan saldo token, total dibeli/dipakai, paket, dan tarif |
+| `GET /api/tokens/transactions` | Bearer | Riwayat mutasi ledger token (`purchase`, `usage`, `refund`) |
+| `GET /api/tokens/packages` | Publik | Daftar paket token dan ketentuan perhitungan biaya |
+| `POST /api/analysis/estimate` | Bearer | Ekstraksi teks (TXT/DOCX/PDF), hitung kata, dan estimasi biaya token tanpa memotong saldo |
+| `POST /api/analysis` | Bearer | Memvalidasi teks, memotong token secara atomik, menjalankan AI, dan mengembalikan token bila gagal |
+| `GET /api/documents` | Bearer | Daftar riwayat dokumen pengguna (mendukung query `?q=` dan `?status=`) |
+| `GET /api/documents/:id` | Bearer | Detail dokumen, hasil analisis, dan seluruh daftar temuan |
+| `PATCH /api/documents/:id/issues` | Bearer | Menerapkan/menolak saran perbaikan (`decisions` atau `accept_all: true`) |
+| `POST /api/documents/:id/restore` | Bearer | Memulihkan teks asli dan mereset status keputusan saran |
+| `GET /api/documents/:id/download` | Bearer | Mengunduh hasil revisi dalam format `pdf`, `docx`, atau `txt` |
+| `GET /api/payments` | Bearer | Katalog paket token, metode pembayaran Midtrans, dan riwayat pesanan |
+| `POST /api/payments` | Bearer | Membuat pesanan pembelian token (`{ package_id, method }`) |
+| `GET /api/payments/:orderId` | Bearer | Memeriksa status pembayaran terbaru ke Midtrans |
+| `GET /api/payments/:orderId/qr` | Bearer | Proxy gambar QRIS asli dari Midtrans |
+| `GET /api/payments/:orderId/invoice` | Bearer | Mengunduh bukti pembayaran / invoice PDF (memuat jumlah token & nominal) |
+| `POST /api/payments/notify` | Webhook | Webhook notifikasi Midtrans (verifikasi SHA-512 & idempoten) |
 
-Nominal dan nomor pesanan selalu dibuat server; isi body hanya `method`. Transisi ke lunas
-idempoten (`markPaidIfPending`), jadi webhook ganda tidak menambah masa aktif dua kali.
+---
 
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
+## Cara kerja pembayaran Midtrans
+
+1. Pengguna memilih paket (`hemat`, `populer`, atau `lebih_hemat`) dan metode pembayaran (QRIS, BCA/BNI/BRI/Permata VA, GoPay, ShopeePay, Kartu Kredit/Debit, Alfamart, Indomaret).
+2. Frontend mengirim `POST /api/payments` dengan `{ package_id, method }`. Nominal Rupiah dan jumlah token ditentukan **sepenuhnya oleh backend** dari konstanta `TOKEN_PACKAGES`.
+3. Backend memanggil Midtrans Core API (`/v2/charge`) atau Snap (`/snap/v1/transactions`) dan menyimpan pesanan berstatus `pending`.
+4. Ketika pembayaran lunas (`settlement` / `capture`) melalui webhook `POST /api/payments/notify` (dengan verifikasi signature `SHA512(order_id + status_code + gross_amount + serverKey)` dan kecocokan nominal) atau pemeriksaan status `GET /api/payments/:orderId`, fungsi `markPaidIfPending` memastikan hanya transisi pertama yang menandai pesanan `paid` dan menambahkan token ke saldo pengguna beserta catatan di `token_transactions`.
+
+---
 
 ## Pengujian
 
 ```powershell
+# Jalankan seluruh pengujian backend & unit (68+ tes)
 cd server
-npm.cmd test          # 62 tes lulus + 1 dilewati, tanpa DB PostgreSQL nyata
+npm.cmd test
+
+# Jalankan build produksi frontend
 cd ..
-npm.cmd run build     # build Vite
+npm.cmd run build
 ```
 
-Tes adapter PostgreSQL ikut berjalan (dan tidak lagi dilewati) kalau ada database uji:
-
+Untuk menguji adapter PostgreSQL secara langsung:
 ```powershell
 $env:RUNUT_TEST_DATABASE_URL='postgres://postgres:sandi@localhost:5432/runut'; npm.cmd test
 ```
 
-Tes backend memakai stub HTTP lokal untuk 9Router, jadi jalur permintaan provider ikut diuji.
-Tes edge-case mencakup Unicode, tanda baca, offset, payload null, koordinat invalid,
-duplikat, batas panjang output, ranking kosong, dan input rusak.
-Cakupan: statistik & skor deterministik · validasi keluaran AI (menolak koordinat palsu,
-saran berisiko, kategori liar)
-isolasi dokumen antar-pengguna (403) · 503 AI eksplisit · persetujuan AI wajib ·
-batas kata 500 untuk gratis / tanpa batas untuk Premium, pemotongan teks panjang
-(`splitForAi` + `mapLimit`), unduh PDF/DOCX/TXT (PDF dibaca ulang dengan `pdf-lib`),
-keputusan saran + stale position (409), alur pembayaran terproteksi (nominal dari server,
-lunas idempoten, QR asli tidak dikarang, kepemilikan transaksi), webhook: tanda tangan
-SHA512, nominal, dan status expire.
-pembelian ditutup tanpa `MIDTRANS_SERVER_KEY`; endpoint simulator dihapus.
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
-
-## Struktur proyek
-
-```
-src/                      # Frontend Vue 3
-  views/                  # 14 halaman (landing, tentang, analisis, hasil, bandingkan, riwayat, premium, akun, auth)
-  components/             # AppHeader, AppFooter, BaseButton, BaseCard, HighlightedText, …
-  store/                  # auth, documents (draf analisis aktif)
-  utils/api.js            # klien HTTP terpusat + rotasi token
-public/images/            # logo.svg, ikon ilustrasi
-server/
-  src/
-    app.js                # mount route, CORS, rate limit, /api/health
-    config.js             # semua pembacaan environment
-    repositories/         # index.js (titik tukar) · memory.js · postgres.js
-    middleware/           # auth (JWT) + error terpusat
-    routes/               # auth, analysis, documents, payments
-    services/             # stats, aiProvider, aiValidate, retention, mailer
-  test/                   # app.test.js, units.test.js, payments.test.js, payments-notify.test.js, postgres.test.js
-docs/
-  KEPUTUSAN_TEKNIS.md     # catatan keputusan D1–D14
-  PERUBAHAN_SRS_SDD.md    # penyesuaian terhadap dokumen SRS/SDD
-```
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
-
-## Batasan jujur
-
-- **Dokumen & hasil analisis masih di memori** - hilang saat server dimatikan. Hanya
-  akun dan sesi yang bisa disimpan ke PostgreSQL.
-- **Similarity & Penggunaan AI bukan cek plagiarisme.** Tidak ada basis data pembanding.
-- **Premium hanya bisa diaktifkan lewat pembayaran.** Tanpa `MIDTRANS_SERVER_KEY`,
-  pembelian dinonaktifkan di semua lingkungan.
-- **Job analisis bertahan saat pindah halaman, bukan saat halaman dimuat ulang.** Memuat
-  ulang browser menghentikan permintaan yang sedang berjalan.
-- **Batas praktis satu dokumen 200.000 karakter** (~30.000 kata); di atas itu server
-  menjawab 413 dan meminta teks dipecah.
-- **Retensi dokumen 30 hari** sejak analisis terakhir, atau sampai dihapus manual.
-- **Akun Premium hanya bisa diaktifkan lewat pembayaran atau webhook gateway.**
-- Kegagalan provider AI **tidak pernah** diganti hasil buatan: server menjawab error nyata.
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
-
-## Yang ditunda
-
-- Adapter PostgreSQL untuk dokumen, analisis, dan saran (kini masih di memori).
-- Halaman admin untuk melihat seluruh transaksi lintas pengguna.
-- Provider AI tambahan (mis. Ollama/Qwen) di balik antarmuka provider yang sama.
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
-
-## Pemecahan masalah
-
-| Gejala | Penyebab umum | Solusi |
-|---|---|---|
-| `npm` error ExecutionPolicy | PowerShell memblokir `.ps1` | pakai `npm.cmd`, atau `node "...npm\bin\npm-cli.js"` |
-| Analisis `503 AI_NOT_CONFIGURED` | `.env` AI belum lengkap | isi `AI_BASE_URL`/`AI_API_KEY`/`AI_MODEL`, lalu restart server |
-| Analisis `502/504` | model lambat atau keluaran tidak valid | naikkan `AI_TIMEOUT_MS`; hasil gagal memang tidak disimpan |
-| Login 401 setelah restart | `JWT_ACCESS_SECRET` kosong (kunci acak) | isi secret tetap, lalu masuk ulang |
-| Data hilang tiap restart | dokumen masih di memori | perilaku saat ini; akun tetap aman bila `DATABASE_URL` diisi |
-| `storage` di health tidak berubah ke postgresql | `DATABASE_URL` salah / DB mati | cek pesan `[storage]` di log server; uji koneksi `psql` |
-| Lupa sandi `503 MAIL_NOT_CONFIGURED` | SMTP kosong | isi `MAIL_*` (dev bisa pakai Mailtrap) |
-| Frontend `Network Error` / CORS | API mati atau origin berbeda | pastikan API hidup; di mode dev semua origin `localhost`/`127.0.0.1` diizinkan |
-| Vite pindah ke 5174 | proses lama masih memegang 5173 | tetap jalan; hentikan proses lama bila ingin 5173 |
-| Port 3000/5173 terpakai | proses lama | hentikan proses atau ubah `PORT` |
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
+---
 
 ## Keamanan & privasi
 
-- Kata sandi di-hash dengan bcrypt; access token disimpan **di memori browser**, refresh
-  token di cookie HttpOnly (`runut_rt`, path `/api/auth`) dengan rotasi - bukan localStorage.
-- Token reset sandi disimpan sebagai SHA-256 dan berlaku ≤30 menit.
-- Kredensial AI hanya di server (`.env`, di-`.gitignore`); tidak pernah masuk ke frontend,
-  log, atau respons. Jangan pernah menulis kredensial asli ke repo.
-- Dokumen terisolasi per pemilik (403 bila milik akun lain).
-- Nilai kolom yang boleh diubah lewat `users.update()` dibatasi daftar putih, dan seluruh
-  nilai dikirim sebagai parameter SQL - tidak ada penggabungan string.
-- Rate limit pada endpoint auth dan analisis; unggahan dibatasi 5 MB (TXT/DOCX/PDF).
-- Teks hanya dikirim ke provider AI setelah persetujuan eksplisit (`ai_consent: true`).
-
-<p align="right">(<a href="#readme-top">kembali ke atas</a>)</p>
+- Semua endpoint sensitif wajib menggunakan token autentikasi (`requireAuth`).
+- Isolasi data ketat: pengguna tidak dapat melihat atau memodifikasi dokumen, saldo, transaksi token, maupun pembayaran milik akun lain (`403 Forbidden`).
+- Saldo token tidak pernah bisa diubah dari request klien (`users.update` memfilter kolom lewat daftar putih dan mengabaikan `token_balance`).
+- Pemotongan saldo menggunakan operasi atomik dan kunci idempotensi sehingga permintaan ganda atau bersamaan tidak pernah membuat saldo negatif atau memotong dua kali.
+- Di lingkungan `production`, server wajib menggunakan PostgreSQL (`DATABASE_URL`) dan menolak jatuh diam-diam ke penyimpanan memori.

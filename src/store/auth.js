@@ -7,8 +7,6 @@ export const auth = reactive({
   user: null,
   ready: false,
 
-  // Saat halaman dimuat ulang, access token sudah hilang; pulihkan sesi dari
-  // cookie refresh bila server masih mengenalinya.
   async init() {
     try {
       await restoreSession();
@@ -45,6 +43,15 @@ export const auth = reactive({
     try {
       const { user } = await api('/api/auth/me');
       this.user = user;
-    } catch { /* abaikan */ }
+      return user;
+    } catch {
+      return null;
+    }
+  },
+
+  setBalance(balance) {
+    if (this.user && Number.isFinite(Number(balance))) {
+      this.user.token_balance = Math.max(0, Math.trunc(Number(balance)));
+    }
   },
 });

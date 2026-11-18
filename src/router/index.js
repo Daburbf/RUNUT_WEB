@@ -14,23 +14,35 @@ const routes = [
   { path: '/bandingkan/:id?', name: 'compare', component: () => import('../views/CompareView.vue'), meta: { auth: true } },
   { path: '/dokumen/:id', name: 'document-detail', component: () => import('../views/DocumentDetailView.vue'), meta: { auth: true } },
   { path: '/riwayat', name: 'history', component: () => import('../views/HistoryView.vue'), meta: { auth: true } },
-  { path: '/premium', name: 'premium', component: () => import('../views/PremiumView.vue'), meta: { auth: true } },
+  {
+    path: '/token',
+    alias: ['/beli-token', '/isi-token', '/premium'],
+    name: 'tokens',
+    component: () => import('../views/PremiumView.vue'),
+    meta: { auth: true },
+  },
   { path: '/akun', name: 'account', component: () => import('../views/AccountView.vue'), meta: { auth: true } },
   { path: '/:pathMatch(.*)*', name: 'notfound', component: () => import('../views/NotFoundView.vue') },
 ]
 
 const router = createRouter({
-  // Hash history: tidak butuh rewrite server, tidak 404 saat refresh/deep-link
-  // di hosting statis mana pun (root maupun subpath). URL jadi /#/hasil dst.
   history: createWebHashHistory(),
   routes,
-  scrollBehavior: () => ({ top: 0 }),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (to.hash) {
+      return { el: to.hash, behavior: 'smooth', top: 100 }
+    }
+    // Jangan memaksa scroll ke atas bila hanya query yang berubah pada rute yang sama.
+    if (to.path === from.path) return false
+    return { top: 0 }
+  },
 })
 
 router.beforeEach(async (to) => {
-  // `!session.access` menangkap keadaan sisa: sudah masuk tapi token hilang
-  // (mis. refresh gagal/kedaluwarsa) - pulihkan sebelum halaman meminta data.
-  if (!auth.ready || (auth.user && !session.access)) { try { await auth.init() } catch { /* abaikan */ } }
+  if (!auth.ready || (auth.user && !session.access)) {
+    try { await auth.init() } catch { /* abaikan */ }
+  }
   if (to.meta.auth && !auth.user) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.meta.guest && auth.user) return { name: 'analyze' }
 })

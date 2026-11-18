@@ -1,4 +1,4 @@
-import { payments } from '../repositories/index.js';
+import { payments, tokenTransactions } from '../repositories/index.js';
 import { HttpError, asyncHandler } from '../middleware/errors.js';
 import { buildPdf } from '../services/pdf.js';
 import {
@@ -25,25 +25,38 @@ async function ownedPayment(userId, orderId) {
 const fmtIdr = (n) => 'Rp' + Number(n || 0).toLocaleString('id-ID');
 const fmtDate = (v) => (v ? new Date(v).toLocaleString('id-ID', { dateStyle: 'long', timeStyle: 'short' }) : '-');
 
-// GET /api/payments - katalog metode, status gateway, dan riwayat transaksi.
+// GET /api/payments - katalog paket token, metode, status gateway, dan riwayat transaksi.
 export const listPayments = asyncHandler(async (req, res) => {
-  const rows = await payments.listByUser(req.user.id, { limit: 20 });
-  res.json({ ...paymentInfo(), orders: rows.map(publicPayment) });
+  const [rows, summary] = await Promise.all([
+    payments.listByUser(req.user.id, { limit: 20 }),
+    tokenTransactions.summaryByUser(req.user.id),
+  ]);
+  res.json({
+    ...paymentInfo(),
+    token_balance: summary.balance,
+    orders: rows.map(publicPayment),
+  });
 });
 
-// POST /api/payments - buat transaksi. Nominal dan nomor order ditentukan
-// server; isi body hanya "method".
+// POST /api/payments - buat transaksi pembelian token.
+// Nominal dan jumlah token ditentukan server berdasarkan package_id.
 export const createPaymentHandler = asyncHandler(async (req, res) => {
-  const row = await createPayment(req.user, req.body?.method);
+  const row = await createPayment(req.user, {
+    packageId: req.body?.package_id || req.body?.packageId,
+    methodId: req.body?.method,
+  });
   res.status(201).json({ payment: publicPayment(row) });
 });
 
-// GET /api/payments/:orderId - status terbaru (dipakai polling dan tombol
-// "Periksa status"). Status tidak pernah ditentukan dari parameter URL.
+// GET /api/payments/:orderId - status terbaru (dipakai polling dan tombol "Periksa status").
 export const getPayment = asyncHandler(async (req, res) => {
   const row = await ownedPayment(req.user.id, req.params.orderId);
   const fresh = await refreshPayment(row);
-  res.json({ payment: publicPayment(fresh) });
+  const summary = await tokenTransactions.summaryByUser(req.user.id);
+  res.json({
+    payment: publicPayment(fresh),
+    token_balance: summary.balance,
+  });
 });
 
 export const paymentQr = asyncHandler(async (req, res) => {
@@ -58,19 +71,20 @@ export const paymentQr = asyncHandler(async (req, res) => {
 export const paymentInvoice = asyncHandler(async (req, res) => {
   const row = await ownedPayment(req.user.id, req.params.orderId);
   const body = [
-    `Nomor pesanan : ${row.order_id}`,
-    `Tanggal       : ${fmtDate(row.created_at)}`,
-    `Metode        : ${row.method_label || row.method}`,
-    `Status        : ${STATUS_LABEL[row.status] || row.status}`,
-    `Jumlah        : ${fmtIdr(row.amount)}`,
-    `Masa aktif    : ${row.premium_days} hari`,
-    `Dibayar pada  : ${fmtDate(row.paid_at)}`,
+    `Nomor pesanan   : ${row.order_id}`,
+    `Tanggal         : ${fmtDate(row.created_at)}`,
+    `Paket           : ${row.package_label || row.package_id || 'Paket Token'}`,
+    `Jumlah Token    : ${Number(row.token_amount || 0)} token`,
+    `Metode          : ${row.method_label || row.method}`,
+    `Nominal         : ${fmtIdr(row.amount)}`,
+    `Status          : ${STATUS_LABEL[row.status] || row.status}`,
+    `Dibayar pada    : ${fmtDate(row.paid_at)}`,
     '',
-    'Terima kasih telah mendukung Runut. Invoice ini dibuat otomatis oleh sistem',
+    'Terima kasih telah menggunakan Runut. Invoice ini dibuat otomatis oleh sistem',
     'dan sah tanpa tanda tangan basah.',
   ].join('\n');
   const pdf = await buildPdf({
-    title: 'Invoice Runut',
+    title: 'Invoice Pembelian Token Runut',
     meta: row.status === 'paid' ? 'PEMBAYARAN LUNAS' : `STATUS: ${(STATUS_LABEL[row.status] || row.status).toUpperCase()}`,
     body,
   });
@@ -79,8 +93,7 @@ export const paymentInvoice = asyncHandler(async (req, res) => {
   res.send(pdf);
 });
 
-// POST /api/payments/notify - webhook Midtrans. Tanpa server key, notifikasi
-// ditolak (503) supaya tidak ada jalur "lunas" tanpa verifikasi.
+// POST /api/payments/notify - webhook Midtrans.
 export const paymentNotification = asyncHandler(async (req, res) => {
   const row = await handleNotification(req.body);
   res.json({ ok: true, order_id: row.order_id, status: row.status });

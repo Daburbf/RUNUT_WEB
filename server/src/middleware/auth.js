@@ -7,15 +7,14 @@ export const REFRESH_COOKIE = 'runut_rt';
 
 export function signAccessToken(user) {
   return jwt.sign(
-    { sub: user.id, email: user.email, premium: Boolean(user.is_premium) },
+    { sub: user.id, email: user.email },
     config.jwt.accessSecret,
     { expiresIn: config.jwt.accessTtl },
   );
 }
 
 // Refresh token disimpan di cookie HttpOnly, bukan di localStorage, sehingga
-// JavaScript halaman tidak dapat membacanya (SRS: jangan simpan refresh token
-// mentah di penyimpanan klien yang dapat dibaca skrip).
+// JavaScript halaman tidak dapat membacanya.
 export function setRefreshCookie(res, token) {
   res.cookie(REFRESH_COOKIE, token, {
     httpOnly: true,
@@ -47,11 +46,7 @@ export async function requireAuth(req, _res, next) {
     }
     const user = await users.findById(payload.sub);
     if (!user) throw new HttpError(401, 'Akun tidak ditemukan.', { code: 'NO_USER' });
-    // Premium kedaluwarsa diturunkan saat dibaca.
-    if (user.is_premium && user.premium_until && new Date(user.premium_until) < new Date()) {
-      await users.update(user.id, { is_premium: false });
-      user.is_premium = false;
-    }
+    user.token_balance = Math.max(0, Number(user.token_balance) || 0);
     req.user = user;
     next();
   } catch (err) {

@@ -298,3 +298,23 @@ membuka ulang berkasnya di pengujian.
 2. `POST /api/payments` mengembalikan `201 { payment }`; `payment.instructions` berisi data yang
    dibutuhkan tiap kanal (bukan tautan statis).
 3. Tidak ada endpoint pembayaran yang menerima nominal dari klien.
+
+---
+
+## E. Perubahan ke Sistem Token Progresif (Menggantikan Gratis & Premium)
+
+1. **Model Bisnis:** Seluruh konsep akun Gratis (batas 500 kata, 3 masalah) dan langganan Premium
+   bulanan (Rp49.000/30 hari) diganti dengan **Sistem Saldo Token**. Pengguna baru mulai dengan
+   `0 token`.
+2. **Tarif Analisis Progresif:** Biaya dihitung di backend menggunakan rumus
+   `cost = Math.ceil(wordCount / 1000)` (1–1.000 kata = 1 token, 1.001–2.000 kata = 2 token,
+   2.001–3.000 kata = 3 token, dst., minimal 20 kata). Seluruh temuan, saran perbaikan, dan
+   unduhan (PDF, DOCX, TXT) langsung terbuka tanpa dikunci.
+3. **Paket Pembelian Token (Midtrans):**
+   - **Hemat:** 5 token = Rp5.000
+   - **Populer:** 10 token = Rp9.000
+   - **Lebih Hemat:** 20 token = Rp16.000
+4. **Basis Data & Ledger Token:** Penambahan kolom `users.token_balance`, `documents.token_cost`,
+   `analysis_results.token_cost`, `payments.package_id`, `payments.package_label`,
+   `payments.token_amount`, serta tabel `token_transactions` untuk mencatat setiap transaksi
+   pembelian (`purchase`), pemakaian analisis (`usage`), dan pengembalian (`refund`) secara atomik.

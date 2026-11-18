@@ -3,15 +3,16 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
-// Skema dibuat otomatis saat startup (create table if not exists) supaya
-// menyiapkan database lokal cukup satu perintah: buat database, isi
-// DATABASE_URL, jalankan server. Nama tabel mengikuti SDD 3.3.
+// Skema dan migrasi aman (non-destruktif) untuk sistem token.
+// Kolom lama (is_premium, premium_until, premium_days) dipertahankan untuk
+// kompatibilitas mundur tanpa menghapus data yang sudah ada.
 export const SCHEMA = `
 create table if not exists users (
   id uuid primary key,
   name text not null,
   email text not null,
   password_hash text not null,
+  token_balance integer not null default 0,
   is_premium boolean not null default false,
   premium_until timestamptz,
   reset_token_hash text,
@@ -19,7 +20,26 @@ create table if not exists users (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table users add column if not exists token_balance integer not null default 0;
 create unique index if not exists users_email_key on users (lower(email));
+
+create table if not exists token_transactions (
+  id uuid primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  type text not null,
+  amount integer not null,
+  balance_after integer not null,
+  description text not null,
+  reference_type text,
+  reference_id text,
+  idempotency_key text,
+  meta jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists token_transactions_user_idx on token_transactions (user_id, created_at desc);
+create unique index if not exists token_transactions_idempotency_idx
+  on token_transactions (user_id, idempotency_key)
+  where idempotency_key is not null;
 
 create table if not exists documents (
   id uuid primary key,
@@ -28,6 +48,7 @@ create table if not exists documents (
   original_text text not null,
   revised_text text,
   word_count integer not null default 0,
+  token_cost integer not null default 0,
   file_name text,
   status text not null default 'analyzed',
   expires_at timestamptz,
@@ -35,6 +56,7 @@ create table if not exists documents (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table documents add column if not exists token_cost integer not null default 0;
 create index if not exists documents_user_updated_idx on documents (user_id, updated_at desc);
 
 create table if not exists analysis_results (
@@ -42,12 +64,16 @@ create table if not exists analysis_results (
   document_id uuid not null references documents(id) on delete cascade,
   stats jsonb not null default '{}'::jsonb,
   locked boolean not null default false,
+  token_cost integer not null default 0,
+  idempotency_key text,
   ai_provider text,
   ai_model text,
   ai_latency_ms integer,
   ai_status text,
   created_at timestamptz not null default now()
 );
+alter table analysis_results add column if not exists token_cost integer not null default 0;
+alter table analysis_results add column if not exists idempotency_key text;
 create index if not exists analysis_results_document_idx on analysis_results (document_id, created_at desc);
 
 create table if not exists issues (
@@ -72,6 +98,9 @@ create table if not exists payments (
   id uuid primary key,
   user_id uuid not null references users(id) on delete cascade,
   order_id text not null,
+  package_id text,
+  package_label text,
+  token_amount integer not null default 0,
   method text not null,
   method_label text,
   channel text,
@@ -86,9 +115,10 @@ create table if not exists payments (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
--- Tabel payments sudah ada di basis data lama: tambahkan kolom baru tanpa
--- menghapus data yang sudah tercatat.
 alter table payments add column if not exists order_id text;
+alter table payments add column if not exists package_id text;
+alter table payments add column if not exists package_label text;
+alter table payments add column if not exists token_amount integer not null default 0;
 alter table payments add column if not exists method text;
 alter table payments add column if not exists method_label text;
 alter table payments add column if not exists channel text;
@@ -113,19 +143,15 @@ create index if not exists refresh_tokens_token_hash_idx on refresh_tokens (toke
 create index if not exists refresh_tokens_user_id_idx on refresh_tokens (user_id);
 `;
 
-// Kolom yang boleh diubah lewat update(); kunci lain diabaikan agar tidak ada
-// nama kolom dari luar yang masuk ke SQL.
 const USER_COLUMNS = new Set([
   'name', 'email', 'password_hash', 'is_premium', 'premium_until',
   'reset_token_hash', 'reset_token_expires_at',
 ]);
 const DOCUMENT_COLUMNS = new Set([
-  'title', 'original_text', 'revised_text', 'word_count', 'file_name',
+  'title', 'original_text', 'revised_text', 'word_count', 'token_cost', 'file_name',
   'status', 'expires_at', 'last_analyzed_at',
 ]);
 
-// Id yang tidak berbentuk UUID tidak pernah dilanjutkan ke SQL: PostgreSQL
-// melempar 22P02, sedangkan adapter memori hanya menjawab "tidak ditemukan".
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (v) => UUID_RE.test(String(v || ''));
 
@@ -138,8 +164,6 @@ const setClause = (patch, allowed, firstIndex = 2) => {
   };
 };
 
-// Adapter PostgreSQL: seluruh tabel pada SDD 3.3 yang benar-benar dipakai
-// aplikasi (users, documents, analysis_results, issues, refresh_tokens).
 export async function createPostgresRepositories(connectionString) {
   const pool = new Pool({
     connectionString,
@@ -147,8 +171,6 @@ export async function createPostgresRepositories(connectionString) {
     connectionTimeoutMillis: 3000,
     idleTimeoutMillis: 10000,
   });
-  // Tanpa listener ini, satu koneksi idle yang putus membuat Pool memancarkan
-  // 'error' tanpa penangkap dan seluruh proses Node mati.
   pool.on('error', (err) => console.error(JSON.stringify({ event: 'pg_pool_error', reason: err.message })));
   try {
     const client = await pool.connect();
@@ -158,16 +180,17 @@ export async function createPostgresRepositories(connectionString) {
       client.release();
     }
   } catch (err) {
-    // Startup gagal: pool tidak dipakai lagi, jadi ditutup agar tidak menggantung.
     await pool.end().catch(() => {});
     throw err;
   }
 
   const users = {
-    async create({ name, email, password_hash }) {
+    async create({ name, email, password_hash, token_balance = 0 }) {
+      const bal = Math.max(0, Math.trunc(Number(token_balance) || 0));
       const { rows } = await pool.query(
-        `insert into users (id, name, email, password_hash) values ($1, $2, $3, $4) returning *`,
-        [randomUUID(), name, email, password_hash],
+        `insert into users (id, name, email, password_hash, token_balance)
+         values ($1, $2, $3, $4, $5) returning *`,
+        [randomUUID(), name, email, password_hash, bal],
       );
       return rows[0];
     },
@@ -200,7 +223,6 @@ export async function createPostgresRepositories(connectionString) {
       );
       return rows[0] || null;
     },
-    // Aktivasi premium tidak bisa dipicu dari HTTP (pembayaran belum dibuka).
     async extendPremium(id, days) {
       if (!isUuid(id)) return null;
       const { rows } = await pool.query(
@@ -212,6 +234,240 @@ export async function createPostgresRepositories(connectionString) {
         [id, String(Number(days) || 0)],
       );
       return rows[0] || null;
+    },
+  };
+
+  const tokenTransactions = {
+    async findByIdempotencyKey(user_id, idempotency_key) {
+      if (!isUuid(user_id) || !idempotency_key) return null;
+      const key = String(idempotency_key).trim();
+      if (!key) return null;
+      const { rows } = await pool.query(
+        'select * from token_transactions where user_id = $1 and idempotency_key = $2 limit 1',
+        [user_id, key],
+      );
+      return rows[0] || null;
+    },
+
+    async credit({
+      user_id,
+      amount,
+      type = 'purchase',
+      description = 'Penambahan token',
+      reference_type = null,
+      reference_id = null,
+      idempotency_key = null,
+      meta = {},
+    }) {
+      if (!isUuid(user_id)) return { ok: false, error: 'USER_NOT_FOUND' };
+      const delta = Math.trunc(Number(amount));
+      if (!Number.isFinite(delta) || delta <= 0) {
+        throw new Error('Jumlah penambahan token harus bilangan bulat positif.');
+      }
+      const idemKey = idempotency_key ? String(idempotency_key).trim() : null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        if (idemKey) {
+          const { rows: existing } = await client.query(
+            'select * from token_transactions where user_id = $1 and idempotency_key = $2 limit 1',
+            [user_id, idemKey],
+          );
+          if (existing[0]) {
+            const { rows: uRows } = await client.query('select * from users where id = $1', [user_id]);
+            await client.query('commit');
+            return { ok: true, duplicate: true, transaction: existing[0], user: uRows[0] || null };
+          }
+        }
+        const { rows: updated } = await client.query(
+          `update users set token_balance = token_balance + $2, updated_at = now()
+           where id = $1 returning *`,
+          [user_id, delta],
+        );
+        if (!updated[0]) {
+          await client.query('rollback');
+          return { ok: false, error: 'USER_NOT_FOUND' };
+        }
+        const user = updated[0];
+        const { rows: txRows } = await client.query(
+          `insert into token_transactions
+             (id, user_id, type, amount, balance_after, description, reference_type, reference_id, idempotency_key, meta)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+           returning *`,
+          [
+            randomUUID(), user_id, type, delta, user.token_balance,
+            String(description || 'Penambahan token'),
+            reference_type || null, reference_id || null, idemKey, JSON.stringify(meta || {}),
+          ],
+        );
+        await client.query('commit');
+        return { ok: true, duplicate: false, transaction: txRows[0], user };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async deduct({
+      user_id,
+      amount,
+      description = 'Penggunaan token untuk analisis',
+      reference_type = 'analysis',
+      reference_id = null,
+      idempotency_key = null,
+      meta = {},
+    }) {
+      if (!isUuid(user_id)) return { ok: false, balance: 0, error: 'USER_NOT_FOUND' };
+      const cost = Math.trunc(Number(amount));
+      if (!Number.isFinite(cost) || cost <= 0) {
+        throw new Error('Jumlah pemotongan token harus bilangan bulat positif.');
+      }
+      const idemKey = idempotency_key ? String(idempotency_key).trim() : null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        if (idemKey) {
+          const { rows: existing } = await client.query(
+            'select * from token_transactions where user_id = $1 and idempotency_key = $2 limit 1',
+            [user_id, idemKey],
+          );
+          if (existing[0]) {
+            const { rows: uRows } = await client.query('select * from users where id = $1', [user_id]);
+            await client.query('commit');
+            return {
+              ok: true,
+              duplicate: true,
+              transaction: existing[0],
+              user: uRows[0] || null,
+              balance: uRows[0]?.token_balance ?? 0,
+            };
+          }
+        }
+        // Operasi atomik: hanya berhasil bila token_balance >= cost.
+        const { rows: updated } = await client.query(
+          `update users
+              set token_balance = token_balance - $2, updated_at = now()
+            where id = $1 and token_balance >= $2
+            returning *`,
+          [user_id, cost],
+        );
+        if (!updated[0]) {
+          const { rows: current } = await client.query('select token_balance from users where id = $1', [user_id]);
+          await client.query('rollback');
+          if (!current[0]) return { ok: false, balance: 0, error: 'USER_NOT_FOUND' };
+          return {
+            ok: false,
+            duplicate: false,
+            balance: current[0].token_balance,
+            required: cost,
+            error: 'INSUFFICIENT_TOKENS',
+          };
+        }
+        const user = updated[0];
+        const { rows: txRows } = await client.query(
+          `insert into token_transactions
+             (id, user_id, type, amount, balance_after, description, reference_type, reference_id, idempotency_key, meta)
+           values ($1, $2, 'usage', $3, $4, $5, $6, $7, $8, $9::jsonb)
+           returning *`,
+          [
+            randomUUID(), user_id, -cost, user.token_balance,
+            String(description || 'Penggunaan token untuk analisis'),
+            reference_type || 'analysis', reference_id || null, idemKey, JSON.stringify(meta || {}),
+          ],
+        );
+        await client.query('commit');
+        return {
+          ok: true,
+          duplicate: false,
+          transaction: txRows[0],
+          user,
+          balance: user.token_balance,
+        };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async refund({
+      user_id,
+      amount,
+      description = 'Pengembalian token karena analisis gagal',
+      reference_type = 'analysis_refund',
+      reference_id = null,
+      idempotency_key = null,
+      meta = {},
+    }) {
+      return this.credit({
+        user_id,
+        amount,
+        type: 'refund',
+        description,
+        reference_type,
+        reference_id,
+        idempotency_key,
+        meta,
+      });
+    },
+
+    async updateReference(id, { reference_id, description, meta } = {}) {
+      if (!isUuid(id)) return null;
+      const { rows } = await pool.query(
+        `update token_transactions
+            set reference_id = coalesce($2, reference_id),
+                description = coalesce($3, description),
+                meta = case when $4::jsonb is null then meta else meta || $4::jsonb end
+          where id = $1
+          returning *`,
+        [
+          id,
+          reference_id === undefined ? null : reference_id,
+          description === undefined ? null : description,
+          meta === undefined ? null : JSON.stringify(meta),
+        ],
+      );
+      return rows[0] || null;
+    },
+
+    async listByUser(user_id, { limit = 50, type = '' } = {}) {
+      if (!isUuid(user_id)) return [];
+      const filterType = String(type || '').trim();
+      const { rows } = await pool.query(
+        `select * from token_transactions
+          where user_id = $1 and ($2 = '' or type = $2)
+          order by created_at desc
+          limit $3`,
+        [user_id, filterType, Math.max(1, Math.min(Number(limit) || 50, 200))],
+      );
+      return rows;
+    },
+
+    async summaryByUser(user_id) {
+      if (!isUuid(user_id)) {
+        return { balance: 0, total_purchased: 0, total_used: 0, gross_used: 0, total_refunded: 0 };
+      }
+      const { rows: uRows } = await pool.query('select token_balance from users where id = $1', [user_id]);
+      const { rows: sRows } = await pool.query(
+        `select
+           coalesce(sum(case when type = 'purchase' and amount > 0 then amount else 0 end), 0)::int as total_purchased,
+           coalesce(sum(case when type = 'usage' and amount < 0 then abs(amount) else 0 end), 0)::int as gross_used,
+           coalesce(sum(case when type = 'refund' and amount > 0 then amount else 0 end), 0)::int as total_refunded
+         from token_transactions
+         where user_id = $1`,
+        [user_id],
+      );
+      const s = sRows[0] || { total_purchased: 0, gross_used: 0, total_refunded: 0 };
+      return {
+        balance: Math.max(0, Number(uRows[0]?.token_balance) || 0),
+        total_purchased: s.total_purchased,
+        total_used: Math.max(0, s.gross_used - s.total_refunded),
+        gross_used: s.gross_used,
+        total_refunded: s.total_refunded,
+      };
     },
   };
 
@@ -252,17 +508,17 @@ export async function createPostgresRepositories(connectionString) {
   };
 
   const documents = {
-    // Kebijakan retensi SRS: dokumen disimpan 30 hari setelah analisis terakhir.
     async create(row) {
       const { rows } = await pool.query(
         `insert into documents
-           (id, user_id, title, original_text, word_count, file_name, revised_text, status, expires_at, last_analyzed_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8,
-           coalesce($9::timestamptz, now() + interval '30 days'),
-           coalesce($10::timestamptz, now()))
+           (id, user_id, title, original_text, word_count, token_cost, file_name, revised_text, status, expires_at, last_analyzed_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+           coalesce($10::timestamptz, now() + interval '30 days'),
+           coalesce($11::timestamptz, now()))
          returning *`,
         [
           randomUUID(), row.user_id, row.title, row.original_text, row.word_count || 0,
+          Math.max(0, Math.trunc(Number(row.token_cost) || 0)),
           row.file_name || null, row.revised_text || null, row.status || 'analyzed',
           row.expires_at || null, row.last_analyzed_at || null,
         ],
@@ -274,15 +530,18 @@ export async function createPostgresRepositories(connectionString) {
       const { rows } = await pool.query('select * from documents where id = $1', [id]);
       return rows[0] || null;
     },
-    async listByUser(user_id, { q = '', limit = 100 } = {}) {
+    async listByUser(user_id, { q = '', status = '', limit = 100 } = {}) {
       if (!isUuid(user_id)) return [];
       const needle = String(q || '').trim();
+      const statusFilter = String(status || '').trim();
       const { rows } = await pool.query(
         `select * from documents
-          where user_id = $1 and ($2 = '' or title ilike '%' || $2 || '%')
+          where user_id = $1
+            and ($2 = '' or title ilike '%' || $2 || '%')
+            and ($3 = '' or lower(status) = lower($3))
           order by updated_at desc
-          limit $3`,
-        [user_id, needle, Math.max(1, Math.min(Number(limit) || 100, 500))],
+          limit $4`,
+        [user_id, needle, statusFilter, Math.max(1, Math.min(Number(limit) || 100, 500))],
       );
       return rows;
     },
@@ -296,7 +555,6 @@ export async function createPostgresRepositories(connectionString) {
       );
       return rows[0] || null;
     },
-    // analysis_results dan issues ikut terhapus lewat on delete cascade.
     async deleteMany(user_id, ids) {
       if (!isUuid(user_id)) return [];
       const clean = (Array.isArray(ids) ? ids : []).filter(isUuid);
@@ -320,11 +578,12 @@ export async function createPostgresRepositories(connectionString) {
     async create(row) {
       const { rows } = await pool.query(
         `insert into analysis_results
-           (id, document_id, stats, locked, ai_provider, ai_model, ai_latency_ms, ai_status)
-         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)
+           (id, document_id, stats, locked, token_cost, idempotency_key, ai_provider, ai_model, ai_latency_ms, ai_status)
+         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
          returning *`,
         [
           randomUUID(), row.document_id, JSON.stringify(row.stats || {}), Boolean(row.locked),
+          Math.max(0, Math.trunc(Number(row.token_cost) || 0)), row.idempotency_key || null,
           row.ai_provider || null, row.ai_model || null,
           Number.isFinite(row.ai_latency_ms) ? row.ai_latency_ms : null, row.ai_status || null,
         ],
@@ -342,8 +601,6 @@ export async function createPostgresRepositories(connectionString) {
   };
 
   const issues = {
-    // Satu transaksi: kalau satu baris gagal, tidak ada hasil analisis yang
-    // setengah tersimpan.
     async createMany(rows) {
       const list = Array.isArray(rows) ? rows : [];
       if (!list.length) return [];
@@ -418,15 +675,17 @@ export async function createPostgresRepositories(connectionString) {
     async create(row) {
       const { rows } = await pool.query(
         `insert into payments
-           (id, user_id, order_id, method, method_label, channel, amount, status,
-            provider, provider_ref, instructions, premium_days, expires_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+           (id, user_id, order_id, package_id, package_label, token_amount, method, method_label,
+            channel, amount, status, provider, provider_ref, instructions, premium_days, expires_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16)
          returning *`,
         [
-          randomUUID(), row.user_id, row.order_id, row.method, row.method_label || null,
-          row.channel || null, row.amount, row.status || 'pending', row.provider || null,
-          row.provider_ref || null, JSON.stringify(row.instructions || {}),
-          row.premium_days || 30, row.expires_at ? new Date(row.expires_at) : null,
+          randomUUID(), row.user_id, row.order_id, row.package_id || null, row.package_label || null,
+          Math.max(0, Math.trunc(Number(row.token_amount) || 0)),
+          row.method, row.method_label || null, row.channel || null, row.amount,
+          row.status || 'pending', row.provider || null, row.provider_ref || null,
+          JSON.stringify(row.instructions || {}), row.premium_days || 0,
+          row.expires_at ? new Date(row.expires_at) : null,
         ],
       );
       return rows[0];
@@ -461,9 +720,6 @@ export async function createPostgresRepositories(connectionString) {
       );
       return rows[0] || null;
     },
-    // Satu-satunya jalur yang boleh menandai lunas: syarat status <> 'paid'
-    // dievaluasi oleh basis data, jadi dua notifikasi bersamaan tidak bisa
-    // sama-sama memperpanjang Premium.
     async markPaidIfPending(id, patch) {
       if (!isUuid(id)) return null;
       const { rows } = await pool.query(
@@ -476,5 +732,15 @@ export async function createPostgresRepositories(connectionString) {
     },
   };
 
-  return { users, refreshTokens, documents, analyses, issues, payments, driver: 'postgresql', close: () => pool.end() };
+  return {
+    users,
+    tokenTransactions,
+    refreshTokens,
+    documents,
+    analyses,
+    issues,
+    payments,
+    driver: 'postgresql',
+    close: () => pool.end(),
+  };
 }

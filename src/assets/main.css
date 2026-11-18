@@ -3,9 +3,8 @@
 @tailwind utilities;
 
 /* ============================================================
-   RUNUT - SWISS INTERNATIONAL TYPOGRAPHIC STYLE
+   RUNUT - MODERN SWISS EDITORIAL STYLE
    Putih #FFFFFF · Hitam #000000 · Abu #F2F2F2 · Aksen #FF3000
-   Radius 0 · Tanpa bayangan · Pola sebagai tekstur
    ============================================================ */
 
 html { background: #ffffff; scroll-behavior: smooth; }
@@ -14,62 +13,86 @@ body {
   color: #000000;
   font-family: 'Inter', Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* ---- Tekstur pola (kedalaman tanpa bayangan) ---- */
+/* ---- Tekstur pola halus ---- */
 .swiss-grid-pattern {
   background-image:
-    linear-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 .swiss-dots {
-  background-image: radial-gradient(rgba(0, 0, 0, 0.10) 1.2px, transparent 1.2px);
+  background-image: radial-gradient(rgba(0, 0, 0, 0.08) 1.2px, transparent 1.2px);
   background-size: 16px 16px;
 }
 .swiss-diagonal {
-  background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.05) 0 1px, transparent 1px 10px);
+  background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.04) 0 1px, transparent 1px 10px);
 }
 .swiss-noise { position: relative; }
 .swiss-noise::after {
-  content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.05;
+  content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.04;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
 }
 
-/* ---- Transisi mekanis Swiss: cepat, presisi ---- */
-.swiss-snap { transition: all 200ms ease-out; }
-.swiss-snap-fast { transition: all 150ms linear; }
+/* ---- Transisi Halus & Responsif ---- */
+.swiss-snap { transition: all 240ms cubic-bezier(0.22, 1, 0.36, 1); }
+.swiss-snap-fast { transition: all 180ms cubic-bezier(0.22, 1, 0.36, 1); }
 
-/* ---- Tautan navigasi: teks geser vertikal ---- */
+/* ---- Tautan navigasi: teks geser vertikal mulus ---- */
 .swiss-nav-link { position: relative; display: inline-block; overflow: hidden; height: 1.5em; line-height: 1.5em; }
-.swiss-nav-link > span { display: block; transition: transform 200ms ease-out; }
+.swiss-nav-link > span { display: block; transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1); }
 .swiss-nav-link:hover > span { transform: translateY(-1.5em); }
 .swiss-nav-link > span::after {
   content: attr(data-label); display: block; height: 1.5em; line-height: 1.5em; color: #ff3000;
 }
 
-/* ---- Sorotan masalah: latar lembut + garis bawah warna kategori ---- */
+/* ---- Sorotan masalah di dokumen: halus & nyaman diklik ---- */
 mark.swiss-mark {
-  border-radius: 0;
-  padding: 0 1px;
+  border-radius: 2px;
+  padding: 1px 3px;
+  margin: 0 -1px;
   cursor: pointer;
   color: inherit;
   background: transparent;
-  transition: background-color 150ms linear;
+  transition: all 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-mark.swiss-mark:hover { outline: 2px solid rgba(0, 0, 0, 0.2); outline-offset: 1px; }
+mark.swiss-mark:hover {
+  outline: 2px solid rgba(0, 0, 0, 0.25);
+  outline-offset: 1px;
+}
 mark.swiss-mark:focus-visible { outline: 2px solid #FF3000; outline-offset: 2px; }
 
 /* ---- Ringkasan bawaan <details> tanpa penanda bawaan ---- */
 summary.summary-plain::-webkit-details-marker { display: none; }
 summary.summary-plain::marker { content: ''; }
 
-/* ---- Fokus aksesibel: ring merah 2px ---- */
+/* ---- Fokus aksesibel ---- */
 :focus-visible { outline: 2px solid #ff3000; outline-offset: 2px; }
 
-/* ---- Transisi view ---- */
-.fade-enter-active, .fade-leave-active { transition: opacity 200ms ease-out, transform 200ms ease-out; }
+/* ---- Transisi view & sub-navbar ---- */
+.fade-enter-active, .fade-leave-active { transition: opacity 240ms cubic-bezier(0.22, 1, 0.36, 1), transform 240ms cubic-bezier(0.22, 1, 0.36, 1); }
 .fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(6px); }
+
+.drawer-slide-enter-active, .drawer-slide-leave-active {
+  transition: opacity 280ms cubic-bezier(0.22, 1, 0.36, 1), transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: top center;
+}
+.drawer-slide-enter-from, .drawer-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scaleY(0.97);
+}
+
+.view-slide-enter-active, .view-slide-leave-active {
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.view-slide-enter-from { opacity: 0; transform: translateY(6px); }
+.view-slide-leave-to { opacity: 0; transform: translateY(-6px); }
+
+.swiss-pill-glide {
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), width 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 ::selection { background: #ff3000; color: #ffffff; }
 
@@ -77,8 +100,90 @@ summary.summary-plain::marker { content: ''; }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
-/* ---- Scrollbar objektif ---- */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: #f2f2f2; }
-::-webkit-scrollbar-thumb { background: #000000; border: 2px solid #f2f2f2; }
+/* ---- Scrollbar tipis & rapi ---- */
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: #f7f7f7; }
+::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.35); }
 ::-webkit-scrollbar-thumb:hover { background: #ff3000; }
+
+/* ---- Adaptasi Tema Gelap (prefers-color-scheme: dark) ---- */
+@media (prefers-color-scheme: dark) {
+  html, body {
+    background: #0e0e0e;
+    color: #f5f5f5;
+    color-scheme: dark;
+  }
+
+  .bg-white { background-color: #161616 !important; color: #f5f5f5; }
+  .bg-white\/95 { background-color: rgba(14, 14, 14, 0.95) !important; color: #f5f5f5; }
+  .bg-\[\#F2F2F2\], .bg-\[\#F4F4F4\], .bg-\[\#F5F5F5\], .bg-\[\#F8F8F8\], .bg-\[\#FAFAFA\] {
+    background-color: #1f1f1f !important;
+    color: #f5f5f5;
+  }
+  .bg-\[\#FFF6F3\], .bg-\[\#FFF7F4\], .bg-\[\#FFFDFC\] {
+    background-color: #261714 !important;
+    color: #f5f5f5;
+  }
+  .bg-black { background-color: #242424 !important; color: #f5f5f5; }
+
+  /* Pastikan QRIS tetap di latar putih agar mudah dipindai */
+  .qr-keep-light { background-color: #ffffff !important; }
+
+  .text-black,
+  .hover\:text-black:hover,
+  .group:hover .group-hover\:text-black { color: #f5f5f5 !important; }
+  .text-black\/85 { color: rgba(245, 245, 245, 0.9) !important; }
+  .text-black\/80 { color: rgba(245, 245, 245, 0.86) !important; }
+  .text-black\/75 { color: rgba(245, 245, 245, 0.82) !important; }
+  .text-black\/70 { color: rgba(245, 245, 245, 0.78) !important; }
+  .text-black\/65 { color: rgba(245, 245, 245, 0.72) !important; }
+  .text-black\/60 { color: rgba(245, 245, 245, 0.68) !important; }
+  .text-black\/55 { color: rgba(245, 245, 245, 0.64) !important; }
+  .text-black\/50 { color: rgba(245, 245, 245, 0.6) !important; }
+  .text-black\/45 { color: rgba(245, 245, 245, 0.55) !important; }
+  .text-black\/40 { color: rgba(245, 245, 245, 0.5) !important; }
+  .text-black\/30 { color: rgba(245, 245, 245, 0.45) !important; }
+  .text-black\/20 { color: rgba(245, 245, 245, 0.35) !important; }
+  .placeholder\:text-black\/30::placeholder,
+  .placeholder\:text-black\/40::placeholder { color: rgba(245, 245, 245, 0.45) !important; }
+
+  .border-black { border-color: rgba(255, 255, 255, 0.28) !important; }
+  .border-black\/40 { border-color: rgba(255, 255, 255, 0.36) !important; }
+  .border-black\/30 { border-color: rgba(255, 255, 255, 0.28) !important; }
+  .border-black\/25 { border-color: rgba(255, 255, 255, 0.24) !important; }
+  .border-black\/20 { border-color: rgba(255, 255, 255, 0.2) !important; }
+  .border-black\/15 { border-color: rgba(255, 255, 255, 0.16) !important; }
+  .border-black\/10 { border-color: rgba(255, 255, 255, 0.12) !important; }
+  .divide-black\/10 > :not([hidden]) ~ :not([hidden]) { border-color: rgba(255, 255, 255, 0.12) !important; }
+
+  .hover\:bg-\[\#F2F2F2\]:hover { background-color: #262626 !important; color: #f5f5f5 !important; }
+  .hover\:bg-black:hover { background-color: #2e2e2e !important; color: #ffffff !important; }
+  .hover\:border-black:hover { border-color: rgba(255, 255, 255, 0.6) !important; }
+
+  input, textarea, select {
+    background-color: #161616;
+    color: #f5f5f5;
+    border-color: rgba(255, 255, 255, 0.28);
+  }
+  input::placeholder, textarea::placeholder {
+    color: rgba(245, 245, 245, 0.45);
+  }
+
+  .swiss-grid-pattern {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  }
+  .swiss-dots {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.1) 1.2px, transparent 1.2px);
+  }
+  .swiss-diagonal {
+    background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 10px);
+  }
+  mark.swiss-mark:hover {
+    outline-color: rgba(255, 255, 255, 0.35);
+  }
+
+  ::-webkit-scrollbar-track { background: #141414; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.28); }
+}

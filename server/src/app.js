@@ -12,7 +12,13 @@ import { requireAuth } from './middleware/auth.js';
 import {
   register, login, refresh, logout, me, forgotPassword, resetPassword,
 } from './routes/auth.js';
-import { createAnalysis, upload, FREE_WORD_LIMIT, PREMIUM_WORD_LIMIT } from './routes/analysis.js';
+import {
+  createAnalysis, estimateAnalysis, upload,
+  MIN_ANALYSIS_WORDS, AI_MAX_CHARS, MAX_UPLOAD_BYTES,
+} from './routes/analysis.js';
+import {
+  getTokenBalance, listTokenTransactions, listTokenPackages,
+} from './routes/tokens.js';
 import {
   listDocuments, getDocument, decideIssues, restoreOriginal, renameDocument,
   deleteDocuments, downloadDocument,
@@ -22,9 +28,10 @@ import {
   paymentInvoice, paymentNotification,
 } from './routes/payments.js';
 import { paymentInfo } from './services/payments.js';
+import { TOKEN_PACKAGES, WORDS_PER_TOKEN, getTokenPricingInfo } from './services/tokens.js';
 import { startRetentionJob } from './services/retention.js';
 import bcrypt from 'bcryptjs';
-import { initStorage, storage, users } from './repositories/index.js';
+import { initStorage, storage, users, tokenTransactions } from './repositories/index.js';
 import { getProviderInfo } from './services/aiProvider.js';
 
 export function createApp() {
@@ -36,8 +43,6 @@ export function createApp() {
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      // Di luar produksi, port dev apa pun diizinkan: Vite kadang naik ke 5174
-      // bila 5173 masih dipegang proses lama, dan origin tetap kena tolak.
       const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
       const allowed = [config.frontendUrl, 'http://localhost:5173', 'http://localhost:4173'];
       cb(null, allowed.includes(origin) || (config.env !== 'production' && local));
@@ -47,8 +52,6 @@ export function createApp() {
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
 
-  // Batas laju dapat dinaikkan lewat environment untuk pengujian beban/uji
-  // otomatis; nilai bawaan tetap ketat untuk pemakaian normal.
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: Number(process.env.RATE_LIMIT_AUTH_MAX || 30),
@@ -64,18 +67,24 @@ export function createApp() {
 
   app.get('/api/health', (_req, res) => {
     const ai = getProviderInfo();
+    const pay = paymentInfo();
     res.json({
       ok: true,
       storage: storage.detail,
       ai: { provider: ai.provider, model: ai.model || null, configured: ai.configured, timeout_ms: ai.timeoutMs },
-      premium: {
-        price_idr: config.premium.priceIdr,
-        duration_days: config.premium.durationDays,
-        available: paymentInfo().available,
-        mode: paymentInfo().mode,
+      tokens: {
+        available: pay.available,
+        mode: pay.mode,
+        packages: TOKEN_PACKAGES,
+        pricing: getTokenPricingInfo(),
       },
       mail_configured: config.mail.configured,
-      limits: { free_words: FREE_WORD_LIMIT, premium_words: PREMIUM_WORD_LIMIT, free_shown_issues: 3 },
+      limits: {
+        min_words: MIN_ANALYSIS_WORDS,
+        words_per_token: WORDS_PER_TOKEN,
+        max_chars: AI_MAX_CHARS,
+        max_upload_bytes: MAX_UPLOAD_BYTES,
+      },
     });
   });
 
@@ -88,29 +97,32 @@ export function createApp() {
   app.post('/api/auth/forgot-password', authLimiter, forgotPassword);
   app.post('/api/auth/reset-password', authLimiter, resetPassword);
 
+  // ---- Token & Saldo ----
+  app.get('/api/tokens/packages', listTokenPackages);
+  app.get('/api/tokens/transactions', requireAuth, listTokenTransactions);
+  app.get('/api/tokens', requireAuth, getTokenBalance);
+
   // ---- Analisis (FR-02..FR-06) ----
+  app.post('/api/analysis/estimate', requireAuth, upload.single('file'), estimateAnalysis);
   app.post('/api/analysis', requireAuth, analysisLimiter, upload.single('file'), createAnalysis);
 
   // ---- Dokumen, saran, unduhan (FR-08..FR-11) ----
   app.get('/api/documents', requireAuth, listDocuments);
   app.delete('/api/documents', requireAuth, deleteDocuments);
-  // /:id/download didaftarkan sebelum /:id agar tidak tertelan parameter.
   app.get('/api/documents/:id/download', requireAuth, downloadDocument);
   app.get('/api/documents/:id', requireAuth, getDocument);
   app.patch('/api/documents/:id/issues', requireAuth, decideIssues);
   app.post('/api/documents/:id/restore', requireAuth, restoreOriginal);
   app.patch('/api/documents/:id/title', requireAuth, renameDocument);
 
-  // ---- Pembayaran (FR-07) ----
+  // ---- Pembayaran Token (FR-07) ----
   app.get('/api/payments', requireAuth, listPayments);
   app.post('/api/payments', requireAuth, createPaymentHandler);
-  // /notify didaftarkan sebelum /:orderId agar tidak tertelan parameter.
   app.post('/api/payments/notify', paymentNotification);
   app.get('/api/payments/:orderId/qr', requireAuth, paymentQr);
   app.get('/api/payments/:orderId/invoice', requireAuth, paymentInvoice);
   app.get('/api/payments/:orderId', requireAuth, getPayment);
 
-  // Sajikan build frontend bila ada: satu origin, cookie & CORS otomatis cocok.
   const dist = fileURLToPath(new URL('../../dist', import.meta.url));
   if (existsSync(dist)) {
     app.use(express.static(dist));
@@ -122,32 +134,59 @@ export function createApp() {
   return app;
 }
 
-// Inisialisasi akun siap pakai (Pro & Gratis), supaya fitur berbayar
-// dan fitur gratis bisa langsung digunakan tanpa registrasi manual.
 async function seedInitialAccounts() {
   if (!process.env.SEED_ACCOUNTS) return;
 
-  // 1. Akun Pro / Premium
-  const proEmail = process.env.PRO_EMAIL || 'premium@runut.local';
-  const proPassword = process.env.PRO_PASSWORD || 'Premium12345!';
-  const days = Number(process.env.PRO_DAYS || 30);
-  const proUser = (await users.findByEmail(proEmail)) || (await users.create({
-    name: 'Pengguna Pro',
-    email: proEmail,
-    password_hash: await bcrypt.hash(proPassword, 10),
+  // 1. Akun Test (10 Token)
+  const testEmail = process.env.TEST_EMAIL || 'test@runut.local';
+  const testPassword = process.env.TEST_PASSWORD || 'Test12345!';
+  const testUser = (await users.findByEmail(testEmail)) || (await users.create({
+    name: 'Akun Test',
+    email: testEmail,
+    password_hash: await bcrypt.hash(testPassword, 10),
+    token_balance: 0,
   }));
-  if (!proUser.is_premium) await users.extendPremium(proUser.id, days);
-  console.log(`[auth] akun pro/premium: ${proEmail} / ${proPassword}`);
+  await tokenTransactions.credit({
+    user_id: testUser.id,
+    amount: 10,
+    type: 'purchase',
+    description: 'Saldo awal akun uji coba (Paket Populer - 10 token)',
+    reference_type: 'seed',
+    reference_id: 'SEED-TEST-10',
+    idempotency_key: 'seed:test:10',
+  });
+  console.log(`[auth] akun test (10 token): ${testEmail} / ${testPassword}`);
 
-  // 2. Akun Biasa (Gratis)
-  const freeEmail = process.env.FREE_EMAIL || 'free@runut.local';
-  const freePassword = process.env.FREE_PASSWORD || 'Free12345!';
-  (await users.findByEmail(freeEmail)) || (await users.create({
-    name: 'Pengguna Gratis',
-    email: freeEmail,
-    password_hash: await bcrypt.hash(freePassword, 10),
+  // 2. Akun Demo / Pro lama (10 Token)
+  const demoEmail = process.env.PRO_EMAIL || 'premium@runut.local';
+  const demoPassword = process.env.PRO_PASSWORD || 'Premium12345!';
+  const demoUser = (await users.findByEmail(demoEmail)) || (await users.create({
+    name: 'Pengguna Demo',
+    email: demoEmail,
+    password_hash: await bcrypt.hash(demoPassword, 10),
+    token_balance: 0,
   }));
-  console.log(`[auth] akun gratis: ${freeEmail} / ${freePassword}`);
+  await tokenTransactions.credit({
+    user_id: demoUser.id,
+    amount: 10,
+    type: 'purchase',
+    description: 'Saldo awal akun uji coba (Paket Populer - 10 token)',
+    reference_type: 'seed',
+    reference_id: 'SEED-DEMO-10',
+    idempotency_key: 'seed:demo:10',
+  });
+  console.log(`[auth] akun demo (10 token): ${demoEmail} / ${demoPassword}`);
+
+  // 3. Akun Saldo 0
+  const zeroEmail = process.env.FREE_EMAIL || 'free@runut.local';
+  const zeroPassword = process.env.FREE_PASSWORD || 'Free12345!';
+  (await users.findByEmail(zeroEmail)) || (await users.create({
+    name: 'Pengguna Baru (0 Token)',
+    email: zeroEmail,
+    password_hash: await bcrypt.hash(zeroPassword, 10),
+    token_balance: 0,
+  }));
+  console.log(`[auth] akun uji saldo 0: ${zeroEmail} / ${zeroPassword}`);
 }
 
 export async function start() {

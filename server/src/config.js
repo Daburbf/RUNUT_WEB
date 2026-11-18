@@ -9,9 +9,6 @@ dotenv.config();
 
 const ephemeral = [];
 
-// Kunci JWT wajib diisi di produksi. Untuk pengembangan, kunci acak sementara
-// dibuat agar server tetap bisa dijalankan - dengan catatan jelas bahwa sesi
-// tidak bertahan setelah restart. Tidak ada kunci rahasia di source code.
 function secretFor(name) {
   const value = process.env[name];
   if (value) {
@@ -27,8 +24,6 @@ export const config = {
   port: Number(process.env.PORT || 3000),
   frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, ''),
 
-  // Kosong = penyimpanan memori sementara. Isi untuk menyimpan akun & sesi di
-  // PostgreSQL lokal, mis. postgres://postgres:rahasia@localhost:5432/runut
   database: { url: process.env.DATABASE_URL || '' },
 
   jwt: {
@@ -37,7 +32,6 @@ export const config = {
     refreshDays: Number(process.env.REFRESH_TOKEN_DAYS || 30),
   },
 
-  // Provider AI aktif: gemini / 9router / openai (endpoint kompatibel OpenAI).
   ai: {
     provider: (process.env.AI_PROVIDER || '9router').toLowerCase(),
     baseUrl: (process.env.AI_BASE_URL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (process.env.AI_PROVIDER?.toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:20128/v1'))).replace(/\/$/, ''),
@@ -46,13 +40,6 @@ export const config = {
     timeoutMs: Number(process.env.AI_TIMEOUT_MS || 90000),
   },
 
-  // Harga Premium dipakai seragam oleh halaman Premium dan footer website.
-  premium: {
-    priceIdr: Number(process.env.PREMIUM_PRICE_IDR || 49000),
-    durationDays: Number(process.env.PREMIUM_DURATION_DAYS || 30),
-  },
-
-  // Midtrans credentials. Tanpa server key, pembayaran tidak tersedia.
   payments: {
     serverKey: process.env.MIDTRANS_SERVER_KEY || '',
     clientKey: process.env.MIDTRANS_CLIENT_KEY || '',
@@ -73,7 +60,6 @@ export const config = {
   },
 };
 
-// Tanpa MIDTRANS_SERVER_KEY, pembelian dinonaktifkan di semua lingkungan.
 export function checkStartupConfig() {
   const problems = [];
   if (ephemeral.length) {
@@ -83,7 +69,7 @@ export function checkStartupConfig() {
     problems.push('Konfigurasi AI belum lengkap (AI_BASE_URL/AI_API_KEY/AI_MODEL) - endpoint analisis menjawab 503 sampai dilengkapi.');
   }
   if (!config.payments.serverKey) {
-    problems.push('MIDTRANS_SERVER_KEY belum dikonfigurasi: pembelian Premium dinonaktifkan.');
+    problems.push('MIDTRANS_SERVER_KEY belum dikonfigurasi: pembelian token dinonaktifkan.');
   }
   if (!config.mail.configured) problems.push('SMTP belum dikonfigurasi - reset password via email menjawab 503.');
   return problems;

@@ -43,7 +43,7 @@ const label = (i) => `${cat(i).label} - ${i.snippet || ''}`
 </script>
 
 <template>
-  <div class="whitespace-pre-wrap break-words text-[16px] leading-[1.85] text-black">
+  <div class="whitespace-pre-wrap break-words text-[16px] leading-[1.9] text-black">
     <template v-for="(p, idx) in parts" :key="idx">
       <mark v-if="p.issue" :id="'m-' + p.issue.id" role="button" tabindex="0"
         :aria-label="label(p.issue)" :title="cat(p.issue).label"

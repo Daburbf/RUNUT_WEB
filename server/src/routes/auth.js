@@ -1,7 +1,7 @@
 ﻿import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { config } from '../config.js';
-import { users, refreshTokens } from '../repositories/index.js';
+import { users, refreshTokens, tokenTransactions } from '../repositories/index.js';
 import { HttpError, asyncHandler } from '../middleware/errors.js';
 import { signAccessToken, setRefreshCookie, clearRefreshCookie, readRefreshToken } from '../middleware/auth.js';
 import { sendMail } from '../services/mailer.js';
@@ -9,13 +9,16 @@ import { sendMail } from '../services/mailer.js';
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
 const RESET_TTL_MS = 30 * 60 * 1000;
 
-export function publicUser(u) {
+export function publicUser(u, summary = null) {
+  const balance = Math.max(0, Number(summary?.balance ?? u.token_balance) || 0);
   return {
     id: u.id,
     name: u.name,
     email: u.email,
-    is_premium: Boolean(u.is_premium),
-    premium_until: u.premium_until || null,
+    token_balance: balance,
+    total_purchased: Number(summary?.total_purchased || 0),
+    total_used: Number(summary?.total_used || 0),
+    total_refunded: Number(summary?.total_refunded || 0),
   };
 }
 
@@ -31,7 +34,8 @@ async function issueSession(res, user, userAgent) {
     user_agent: userAgent ? String(userAgent).slice(0, 300) : null,
   });
   setRefreshCookie(res, refreshToken);
-  return { user: publicUser(user), accessToken };
+  const summary = await tokenTransactions.summaryByUser(user.id);
+  return { user: publicUser(user, summary), accessToken };
 }
 
 export const register = asyncHandler(async (req, res) => {
@@ -44,6 +48,7 @@ export const register = asyncHandler(async (req, res) => {
     name: String(name).trim(),
     email: String(email).trim(),
     password_hash: await bcrypt.hash(String(password), 10),
+    token_balance: 0,
   });
   res.status(201).json(await issueSession(res, created, req.headers['user-agent']));
 });
@@ -68,7 +73,6 @@ export const refresh = asyncHandler(async (req, res) => {
   }
   const user = await users.findById(row.user_id);
   if (!user) throw new HttpError(401, 'Akun tidak ditemukan.', { code: 'NO_USER' });
-  // Rotasi: token lama dicabut, pasangan token baru diterbitkan.
   await refreshTokens.revokeById(row.id);
   res.json(await issueSession(res, user, req.headers['user-agent']));
 });
@@ -81,11 +85,10 @@ export const logout = asyncHandler(async (req, res) => {
 });
 
 export const me = asyncHandler(async (req, res) => {
-  res.json({ user: publicUser(req.user) });
+  const summary = await tokenTransactions.summaryByUser(req.user.id);
+  res.json({ user: publicUser(req.user, summary) });
 });
 
-// Selalu balas generik 200 agar akun mana yang terdaftar tidak bisa ditebak.
-// Token sekali pakai, berlaku 30 menit, disimpan sebagai hash.
 export const forgotPassword = asyncHandler(async (req, res) => {
   const { email } = req.body || {};
   if (!config.mail.configured) {
@@ -108,7 +111,6 @@ export const forgotPassword = asyncHandler(async (req, res) => {
           html: `<p>Halo ${user.name},</p><p>Tautan reset kata sandi Anda (berlaku 30 menit):</p><p><a href="${link}">${link}</a></p><p>Jika Anda tidak memintanya, abaikan email ini.</p>`,
         });
       } catch (err) {
-        // Pengiriman gagal tidak boleh dilaporkan sebagai berhasil.
         console.error(JSON.stringify({ event: 'mail_failed', reason: err.message }));
         throw new HttpError(502, 'Tautan reset gagal dikirim oleh server email. Coba lagi nanti atau hubungi administrator.', { code: 'MAIL_FAILED' });
       }
@@ -117,7 +119,6 @@ export const forgotPassword = asyncHandler(async (req, res) => {
   res.json({ ok: true, message: 'Jika email terdaftar, tautan reset telah dikirim (berlaku 30 menit).' });
 });
 
-// Token sekali pakai: setelah dipakai dihapus, dan semua sesi refresh dicabut.
 export const resetPassword = asyncHandler(async (req, res) => {
   const { token, password } = req.body || {};
   if (!token) throw new HttpError(400, 'Token reset wajib diisi.');

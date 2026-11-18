@@ -33,8 +33,12 @@ async function saveTitle() {
   } catch (e) { error.value = e.message }
 }
 async function download(format) {
-  try { await documents.download(data.value.document.id, format, `${data.value.document.title}-revisi.${format}`) }
-  catch (e) { error.value = e.message }
+  error.value = ''
+  try {
+    await documents.download(data.value.document.id, format, `${data.value.document.title}-revisi.${format}`)
+    notice.value = `Dokumen (.${format.toUpperCase()}) berhasil diunduh (-1 token).`
+    clearTimeout(download.t); download.t = setTimeout(() => (notice.value = ''), 2600)
+  } catch (e) { error.value = e.message }
 }
 onMounted(() => load(props.id || window.location.hash.match(/\/dokumen\/([^/?]+)/)?.[1]))
 </script>
@@ -46,7 +50,7 @@ onMounted(() => load(props.id || window.location.hash.match(/\/dokumen\/([^/?]+)
     <div v-else-if="data">
       <h1 class="mt-4 max-w-3xl text-4xl font-black uppercase leading-[0.95] tracking-tighter md:text-6xl">{{ data.document.title }}</h1>
       <p class="mt-3 font-mono text-xs uppercase tracking-widest text-black/60">
-        {{ data.document.word_count }} kata · {{ data.issues.length }} temuan · revisi {{ new Date(data.document.updated_at).toLocaleString('id-ID') }}
+        {{ data.document.word_count }} kata · {{ data.document.token_cost || 1 }} token · {{ data.issues.length }} temuan · diperbarui {{ new Date(data.document.updated_at).toLocaleString('id-ID') }}
       </p>
       <p v-if="notice" class="mt-4 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-wide text-white"><span class="text-[#FF3000]">■</span> {{ notice }}</p>
       <p v-if="error" class="mt-4 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-wide text-white"><span class="text-[#FF3000]">■</span> {{ error }}</p>
@@ -55,8 +59,9 @@ onMounted(() => load(props.id || window.location.hash.match(/\/dokumen\/([^/?]+)
         <BaseButton size="sm" variant="secondary" @click="saveTitle">Ganti judul</BaseButton>
         <BaseButton size="sm" :to="`/hasil/${data.document.id}`">Buka hasil lengkap <i class="fa-solid fa-arrow-right text-xs"></i></BaseButton>
         <BaseButton size="sm" variant="secondary" :to="`/bandingkan/${data.document.id}`">Bandingkan</BaseButton>
-        <BaseButton size="sm" variant="secondary" @click="download('txt')">Unduh .txt</BaseButton>
-        <BaseButton size="sm" variant="secondary" @click="download('docx')">Unduh .docx</BaseButton>
+        <BaseButton size="sm" variant="secondary" @click="download('pdf')">Unduh .pdf · 1 Token</BaseButton>
+        <BaseButton size="sm" variant="secondary" @click="download('docx')">Unduh .docx · 1 Token</BaseButton>
+        <BaseButton size="sm" variant="secondary" @click="download('txt')">Unduh .txt · 1 Token</BaseButton>
         <BaseButton variant="secondary" size="sm" to="/riwayat">Kembali</BaseButton>
       </div>
 
