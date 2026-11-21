@@ -10,7 +10,7 @@ import { config, checkStartupConfig } from './config.js';
 import { errorHandler, notFound } from './middleware/errors.js';
 import { requireAuth } from './middleware/auth.js';
 import {
-  register, login, refresh, logout, me, forgotPassword, resetPassword,
+  register, login, googleLogin, verifyOtp, resendOtp, refresh, logout, me, forgotPassword, resetPassword,
 } from './routes/auth.js';
 import {
   createAnalysis, estimateAnalysis, upload,
@@ -39,7 +39,21 @@ export function createApp() {
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
 
-  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", 'https://accounts.google.com/gsi/client'],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/style', 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://cdnjs.cloudflare.com', 'data:'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https://*.googleusercontent.com'],
+        connectSrc: ["'self'", 'https://accounts.google.com/gsi/'],
+        frameSrc: ["'self'", 'https://accounts.google.com/gsi/'],
+      },
+    },
+  }));
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
@@ -78,7 +92,9 @@ export function createApp() {
         packages: TOKEN_PACKAGES,
         pricing: getTokenPricingInfo(),
       },
-      mail_configured: config.mail.configured,
+      mail_configured: Boolean(config.mail.configured || (process.env.MAIL_HOST && process.env.MAIL_USER && process.env.MAIL_PASS)),
+      google_configured: Boolean((config.google.clientId || process.env.GOOGLE_CLIENT_ID || '').trim()),
+      google_client_id: (config.google.clientId || process.env.GOOGLE_CLIENT_ID || '').trim() || null,
       limits: {
         min_words: MIN_ANALYSIS_WORDS,
         words_per_token: WORDS_PER_TOKEN,
@@ -90,7 +106,10 @@ export function createApp() {
 
   // ---- Autentikasi (FR-01) ----
   app.post('/api/auth/register', authLimiter, register);
+  app.post('/api/auth/verify-otp', authLimiter, verifyOtp);
+  app.post('/api/auth/resend-otp', authLimiter, resendOtp);
   app.post('/api/auth/login', authLimiter, login);
+  app.post('/api/auth/google', authLimiter, googleLogin);
   app.post('/api/auth/refresh', authLimiter, refresh);
   app.post('/api/auth/logout', logout);
   app.get('/api/auth/me', requireAuth, me);

@@ -95,19 +95,28 @@ onMounted(loadAccountData)
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <BaseCard class="flex flex-col justify-between p-6">
             <p class="font-mono text-xs uppercase tracking-widest text-[#FF3000]">Token Tersedia</p>
-            <p class="mt-3 text-4xl font-black tabular-nums">{{ balance }}</p>
+            <p class="mt-3 flex items-center gap-2.5 text-4xl font-black tabular-nums">
+              <span>{{ balance }}</span>
+              <i class="fa-solid fa-coins text-2xl text-[#FF3000]" aria-hidden="true"></i>
+            </p>
             <p class="mt-2 font-mono text-[11px] uppercase tracking-widest text-black/55">Token siap pakai</p>
           </BaseCard>
 
           <BaseCard class="flex flex-col justify-between p-6">
             <p class="font-mono text-xs uppercase tracking-widest text-black/55">Total Token Dibeli</p>
-            <p class="mt-3 text-4xl font-black tabular-nums">{{ totalPurchased }}</p>
+            <p class="mt-3 flex items-center gap-2.5 text-4xl font-black tabular-nums">
+              <span>{{ totalPurchased }}</span>
+              <i class="fa-solid fa-coins text-2xl text-black/70" aria-hidden="true"></i>
+            </p>
             <p class="mt-2 font-mono text-[11px] uppercase tracking-widest text-black/55">Akumulasi pembelian</p>
           </BaseCard>
 
           <BaseCard class="flex flex-col justify-between p-6">
             <p class="font-mono text-xs uppercase tracking-widest text-black/55">Total Token Digunakan</p>
-            <p class="mt-3 text-4xl font-black tabular-nums">{{ totalUsed }}</p>
+            <p class="mt-3 flex items-center gap-2.5 text-4xl font-black tabular-nums">
+              <span>{{ totalUsed }}</span>
+              <i class="fa-solid fa-coins text-2xl text-black/70" aria-hidden="true"></i>
+            </p>
             <p class="mt-2 font-mono text-[11px] uppercase tracking-widest text-black/55">Untuk analisis tulisan</p>
           </BaseCard>
         </div>

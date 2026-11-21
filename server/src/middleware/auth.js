@@ -7,7 +7,7 @@ export const REFRESH_COOKIE = 'runut_rt';
 
 export function signAccessToken(user) {
   return jwt.sign(
-    { sub: user.id, email: user.email },
+    { sub: user.id, email: user.email, tv: Number(user.token_version || 0) },
     config.jwt.accessSecret,
     { expiresIn: config.jwt.accessTtl },
   );
@@ -46,6 +46,9 @@ export async function requireAuth(req, _res, next) {
     }
     const user = await users.findById(payload.sub);
     if (!user) throw new HttpError(401, 'Akun tidak ditemukan.', { code: 'NO_USER' });
+    if (Number(payload.tv || 0) !== Number(user.token_version || 0)) {
+      throw new HttpError(401, 'Sesi sudah tidak berlaku. Silakan masuk kembali.', { code: 'TOKEN_REVOKED' });
+    }
     user.token_balance = Math.max(0, Number(user.token_balance) || 0);
     req.user = user;
     next();

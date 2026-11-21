@@ -11,17 +11,37 @@ create table if not exists users (
   id uuid primary key,
   name text not null,
   email text not null,
-  password_hash text not null,
+  password_hash text,
   token_balance integer not null default 0,
+  email_verified boolean not null default true,
+  google_id text,
+  auth_provider text not null default 'local',
   is_premium boolean not null default false,
   premium_until timestamptz,
   reset_token_hash text,
   reset_token_expires_at timestamptz,
+  otp_code_hash text,
+  otp_purpose text,
+  otp_expires_at timestamptz,
+  otp_attempts integer not null default 0,
+  otp_sent_at timestamptz,
+  token_version integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table users alter column password_hash drop not null;
 alter table users add column if not exists token_balance integer not null default 0;
+alter table users add column if not exists email_verified boolean not null default true;
+alter table users add column if not exists google_id text;
+alter table users add column if not exists auth_provider text not null default 'local';
+alter table users add column if not exists otp_code_hash text;
+alter table users add column if not exists otp_purpose text;
+alter table users add column if not exists otp_expires_at timestamptz;
+alter table users add column if not exists otp_attempts integer not null default 0;
+alter table users add column if not exists otp_sent_at timestamptz;
+alter table users add column if not exists token_version integer not null default 0;
 create unique index if not exists users_email_key on users (lower(email));
+create unique index if not exists users_google_id_key on users (google_id) where google_id is not null;
 
 create table if not exists token_transactions (
   id uuid primary key,
@@ -144,8 +164,9 @@ create index if not exists refresh_tokens_user_id_idx on refresh_tokens (user_id
 `;
 
 const USER_COLUMNS = new Set([
-  'name', 'email', 'password_hash', 'is_premium', 'premium_until',
-  'reset_token_hash', 'reset_token_expires_at',
+  'name', 'email', 'password_hash', 'email_verified', 'google_id', 'auth_provider',
+  'is_premium', 'premium_until', 'reset_token_hash', 'reset_token_expires_at',
+  'otp_code_hash', 'otp_purpose', 'otp_expires_at', 'otp_attempts', 'otp_sent_at',
 ]);
 const DOCUMENT_COLUMNS = new Set([
   'title', 'original_text', 'revised_text', 'word_count', 'token_cost', 'file_name',
@@ -185,12 +206,33 @@ export async function createPostgresRepositories(connectionString) {
   }
 
   const users = {
-    async create({ name, email, password_hash, token_balance = 0 }) {
+    async create({
+      name,
+      email,
+      password_hash = null,
+      token_balance = 0,
+      email_verified = true,
+      google_id = null,
+      auth_provider = 'local',
+      otp_code_hash = null,
+      otp_purpose = null,
+      otp_expires_at = null,
+      otp_attempts = 0,
+      otp_sent_at = null,
+    }) {
       const bal = Math.max(0, Math.trunc(Number(token_balance) || 0));
       const { rows } = await pool.query(
-        `insert into users (id, name, email, password_hash, token_balance)
-         values ($1, $2, $3, $4, $5) returning *`,
-        [randomUUID(), name, email, password_hash, bal],
+        `insert into users (
+           id, name, email, password_hash, token_balance, email_verified,
+           google_id, auth_provider, otp_code_hash, otp_purpose, otp_expires_at,
+           otp_attempts, otp_sent_at
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning *`,
+        [
+          randomUUID(), name, email, password_hash, bal, Boolean(email_verified),
+          google_id, auth_provider, otp_code_hash, otp_purpose, otp_expires_at,
+          Number(otp_attempts) || 0, otp_sent_at,
+        ],
       );
       return rows[0];
     },
@@ -203,6 +245,14 @@ export async function createPostgresRepositories(connectionString) {
       const { rows } = await pool.query(
         'select * from users where lower(email) = lower($1) limit 1',
         [String(email || '').trim()],
+      );
+      return rows[0] || null;
+    },
+    async findByGoogleId(googleId) {
+      if (!googleId) return null;
+      const { rows } = await pool.query(
+        'select * from users where google_id = $1 limit 1',
+        [String(googleId)],
       );
       return rows[0] || null;
     },

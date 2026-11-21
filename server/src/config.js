@@ -58,6 +58,11 @@ export const config = {
     from: process.env.MAIL_FROM || 'Runut <no-reply@runut.local>',
     configured: Boolean(process.env.MAIL_HOST && process.env.MAIL_USER && process.env.MAIL_PASS),
   },
+
+  google: {
+    clientId: (process.env.GOOGLE_CLIENT_ID || '').trim(),
+    configured: Boolean((process.env.GOOGLE_CLIENT_ID || '').trim()),
+  },
 };
 
 export function checkStartupConfig() {

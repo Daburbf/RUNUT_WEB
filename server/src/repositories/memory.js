@@ -58,16 +58,39 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
   };
 
   const users = {
-    async create({ name, email, password_hash, token_balance = 0 }) {
+    async create({
+      name,
+      email,
+      password_hash = null,
+      token_balance = 0,
+      email_verified = true,
+      google_id = null,
+      auth_provider = 'local',
+      otp_code_hash = null,
+      otp_purpose = null,
+      otp_expires_at = null,
+      otp_attempts = 0,
+      otp_sent_at = null,
+      token_version = 0,
+    }) {
       return insert('users', {
         name,
         email,
         password_hash,
         token_balance: Math.max(0, Math.trunc(Number(token_balance) || 0)),
+        email_verified: Boolean(email_verified),
+        google_id,
+        auth_provider,
         is_premium: false,
         premium_until: null,
         reset_token_hash: null,
         reset_token_expires_at: null,
+        otp_code_hash,
+        otp_purpose,
+        otp_expires_at,
+        otp_attempts: Number(otp_attempts) || 0,
+        otp_sent_at,
+        token_version: Number(token_version) || 0,
         updated_at: now(),
       });
     },
@@ -80,6 +103,13 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
     async findByEmail(email) {
       const needle = String(email || '').trim().toLowerCase();
       const row = tables.users.find((u) => u.email.toLowerCase() === needle);
+      if (!row) return null;
+      if (typeof row.token_balance !== 'number') row.token_balance = 0;
+      return clone(row);
+    },
+    async findByGoogleId(googleId) {
+      if (!googleId) return null;
+      const row = tables.users.find((u) => u.google_id && u.google_id === String(googleId));
       if (!row) return null;
       if (typeof row.token_balance !== 'number') row.token_balance = 0;
       return clone(row);

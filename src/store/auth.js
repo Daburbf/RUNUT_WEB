@@ -21,14 +21,37 @@ export const auth = reactive({
 
   async register({ name, email, password }) {
     const data = await api('/api/auth/register', { method: 'POST', body: { name, email, password } });
+    if (data.requires_verification) {
+      return data;
+    }
     session.set(data);
     this.user = data.user;
+    return data;
+  },
+
+  async verifyOtp({ email, otp }) {
+    const data = await api('/api/auth/verify-otp', { method: 'POST', body: { email, otp } });
+    session.set(data);
+    this.user = data.user;
+    return data;
+  },
+
+  async resendOtp(email) {
+    return api('/api/auth/resend-otp', { method: 'POST', body: { email } });
   },
 
   async login(email, password) {
     const data = await api('/api/auth/login', { method: 'POST', body: { email, password } });
     session.set(data);
     this.user = data.user;
+    return data;
+  },
+
+  async loginWithGoogle(credential) {
+    const data = await api('/api/auth/google', { method: 'POST', body: { credential } });
+    session.set(data);
+    this.user = data.user;
+    return data;
   },
 
   async logout() {
