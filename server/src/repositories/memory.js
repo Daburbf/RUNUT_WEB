@@ -532,6 +532,13 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
       saveToDisk();
       return clone(row);
     },
+    async deleteById(id, userId) {
+      const idx = tables.payments.findIndex((p) => p.id === id && p.user_id === userId);
+      if (idx < 0) return false;
+      tables.payments.splice(idx, 1);
+      saveToDisk();
+      return true;
+    },
   };
 
   const downloadTransactions = {

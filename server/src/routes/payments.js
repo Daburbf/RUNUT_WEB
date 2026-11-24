@@ -123,6 +123,13 @@ export const cancelPayment = asyncHandler(async (req, res) => {
   res.json({ ok: true, cancelled: true, payment: publicPayment(updated) });
 });
 
+// DELETE /api/payments/:orderId - hapus satu riwayat pembayaran milik pengguna (tidak mengubah saldo token).
+export const deletePayment = asyncHandler(async (req, res) => {
+  const row = await ownedPayment(req.user.id, req.params.orderId);
+  await payments.deleteById(row.id, req.user.id);
+  res.json({ ok: true, deleted: true, order_id: row.order_id });
+});
+
 // POST /api/payments/notify - webhook Midtrans.
 export const paymentNotification = asyncHandler(async (req, res) => {
   const row = await handleNotification(req.body);

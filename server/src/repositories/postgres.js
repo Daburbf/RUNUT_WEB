@@ -691,6 +691,11 @@ export async function createPostgresRepositories(connectionString) {
       );
       return rows[0] || null;
     },
+    async deleteById(id, userId) {
+      if (!isUuid(id) || !isUuid(userId)) return false;
+      const { rowCount } = await pool.query('delete from payments where id = $1 and user_id = $2', [id, userId]);
+      return (rowCount || 0) > 0;
+    },
   };
 
   const downloadTransactions = {

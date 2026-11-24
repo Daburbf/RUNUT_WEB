@@ -25,6 +25,7 @@ const creating = ref(false)
 const checking = ref(false)
 const manualChecking = ref(false)
 const cancelling = ref(false)
+const deletingOrderId = ref('')
 const renewing = ref(false)
 const renewFailed = ref(false)
 const qrUrl = ref('')
@@ -286,6 +287,31 @@ async function cancelOrder() {
     }
   } finally {
     cancelling.value = false
+  }
+}
+
+async function deleteOrder(row) {
+  if (!row?.order_id || deletingOrderId.value) return
+  deletingOrderId.value = row.order_id
+  error.value = ''
+  notice.value = ''
+  try {
+    await api(`/api/payments/${row.order_id}`, { method: 'DELETE' })
+    orders.value = orders.value.filter((o) => o.order_id !== row.order_id)
+    if (order.value?.order_id === row.order_id) {
+      stopPoll()
+      stopCountdown()
+      if (qrUrl.value) { URL.revokeObjectURL(qrUrl.value); qrUrl.value = '' }
+      order.value = null
+      const nextQuery = { ...route.query }
+      delete nextQuery.order
+      router.replace({ name: 'tokens', query: nextQuery })
+    }
+    notice.value = 'Riwayat pembayaran berhasil dihapus.'
+  } catch (e) {
+    error.value = e.message || 'Gagal menghapus riwayat pembayaran.'
+  } finally {
+    deletingOrderId.value = ''
   }
 }
 
@@ -670,24 +696,36 @@ onBeforeUnmount(() => {
       <BaseCard>
         <p class="border-b-2 border-black px-4 py-3 font-black uppercase tracking-tight">Riwayat Pembayaran Token</p>
         <ul v-if="orders.length" class="divide-y-2 divide-black/10">
-          <li v-for="o in orders" :key="o.order_id" class="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+          <li v-for="o in orders" :key="o.order_id" class="flex flex-col gap-2.5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div class="min-w-0 flex-1">
               <p class="truncate font-bold uppercase tracking-wide">
                 Paket {{ o.package_label || 'Token' }} · +{{ o.token_amount || 0 }} Token
               </p>
-              <p class="font-mono text-[11px] uppercase tracking-widest text-black/50">
+              <p class="break-all font-mono text-[11px] uppercase tracking-widest text-black/50 sm:break-normal">
                 {{ o.order_id }} · {{ o.method_label }} · {{ fmtIdr(o.amount) }} · {{ fmtDate(o.created_at) }}
               </p>
             </div>
-            <span :class="['px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-widest', statusOf(o.status).cls]">
-              {{ statusOf(o.status).label }}
-            </span>
-            <button type="button" class="min-h-[34px] border-2 border-black px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-widest hover:bg-black hover:text-white" @click="openOrder(o)">
-              {{ o.status === 'pending' ? 'Instruksi' : 'Detail' }}
-            </button>
-            <button type="button" class="min-h-[34px] border-2 border-black px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-widest hover:bg-black hover:text-white" @click="invoice(o)">
-              Invoice
-            </button>
+            <div class="flex flex-wrap items-center gap-2">
+              <span :class="['px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-widest', statusOf(o.status).cls]">
+                {{ statusOf(o.status).label }}
+              </span>
+              <button type="button" class="min-h-[34px] border-2 border-black px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-widest hover:bg-black hover:text-white" @click="openOrder(o)">
+                {{ o.status === 'pending' ? 'Instruksi' : 'Detail' }}
+              </button>
+              <button type="button" class="min-h-[34px] border-2 border-black px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-widest hover:bg-black hover:text-white" @click="invoice(o)">
+                Invoice
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center border-2 border-black/30 text-black/60 transition-colors hover:border-[#FF3000] hover:bg-[#FF3000] hover:text-white disabled:opacity-40"
+                :disabled="deletingOrderId === o.order_id"
+                aria-label="Hapus riwayat pembayaran"
+                title="Hapus riwayat pembayaran"
+                @click="deleteOrder(o)"
+              >
+                <i :class="['fa-solid text-xs', deletingOrderId === o.order_id ? 'fa-circle-notch fa-spin' : 'fa-trash-can']"></i>
+              </button>
+            </div>
           </li>
         </ul>
         <p v-else class="p-6 text-center font-mono text-xs uppercase tracking-widest text-black/50">
