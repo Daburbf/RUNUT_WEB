@@ -274,13 +274,8 @@ watch(() => text.value, (val) => {
         </div>
       </div>
 
-      <!-- Bar Tindakan Bawah: Persetujuan & Tombol Mulai Analisis -->
-      <div class="flex flex-col gap-4 border-t border-black/15 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-        <label class="flex cursor-pointer items-center gap-2.5 text-xs text-black/70">
-          <input v-model="aiConsent" type="checkbox" class="h-4 w-4 shrink-0 accent-[#FF3000]" />
-          <span>Setuju kirim teks ke layanan AI untuk dianalisis (token dikembalikan jika sistem gagal).</span>
-        </label>
-
+      <!-- Bar Tindakan Bawah: Tombol Mulai Analisis -->
+      <div class="flex flex-col gap-4 border-t border-black/15 p-4 sm:flex-row sm:items-center sm:justify-end sm:px-6">
         <div class="flex flex-wrap items-center gap-2.5">
           <span v-if="isTooShort" class="font-mono text-[11px] font-bold uppercase tracking-wider text-[#FF3000]">
             Minimal {{ MIN_ANALYSIS_WORDS }} kata
