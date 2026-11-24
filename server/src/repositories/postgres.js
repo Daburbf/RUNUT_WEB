@@ -1016,6 +1016,21 @@ export async function createPostgresRepositories(connectionString) {
       const { rowCount } = await pool.query('delete from document_files where document_id = $1', [document_id]);
       return (rowCount || 0) > 0;
     },
+    async getStorageMetrics() {
+      const { rows } = await pool.query(
+        `select
+           coalesce(sum(size_bytes) filter (where coalesce(storage_provider, 'postgres') = 'postgres'), 0)::bigint as managed_bytes,
+           count(*) filter (where coalesce(storage_provider, 'postgres') = 'postgres')::int as object_count,
+           pg_database_size(current_database())::bigint as total_db_bytes
+         from document_files`,
+      );
+      const row = rows[0] || {};
+      return {
+        managed_bytes: Number(row.managed_bytes || 0),
+        object_count: Number(row.object_count || 0),
+        total_db_bytes: Number(row.total_db_bytes || 0),
+      };
+    },
   };
 
   const r2Usage = {

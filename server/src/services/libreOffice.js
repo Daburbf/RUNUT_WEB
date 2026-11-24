@@ -292,6 +292,78 @@ export function cleanupTempDir(dirPath) {
   }
 }
 
+// Bounded single-concurrency conversion limiter & low-memory guard for 512 MB RAM hosts (e.g. Render Free).
+export function createConversionLimiter({
+  maxConcurrent = 1,
+  maxQueue = 4,
+  maxRssMb = 0,
+  getRssBytes = () => process.memoryUsage().rss,
+} = {}) {
+  let active = 0;
+  const queue = [];
+
+  function release() {
+    active = Math.max(0, active - 1);
+    if (queue.length > 0 && active < maxConcurrent) {
+      const next = queue.shift();
+      active += 1;
+      next.resolve();
+    }
+  }
+
+  return {
+    getStats() {
+      return { active, queued: queue.length, maxConcurrent, maxQueue, maxRssMb };
+    },
+    async run(fn) {
+      if (maxRssMb > 0) {
+        const rssMb = getRssBytes() / (1024 * 1024);
+        if (rssMb >= maxRssMb) {
+          return {
+            ok: false,
+            code: 'INSUFFICIENT_MEMORY',
+            error: `Memori proses saat ini (${Math.round(rssMb)} MB) mendekati batas aman konversi (${maxRssMb} MB). Dokumen asli tetap aman; coba lagi beberapa saat.`,
+          };
+        }
+      }
+      if (active >= maxConcurrent) {
+        if (queue.length >= maxQueue) {
+          return {
+            ok: false,
+            code: 'CONVERSION_QUEUE_FULL',
+            error: 'Antrean konversi dokumen sedang penuh (maksimal 1 proses serentak pada mode hemat memori). Silakan coba lagi sebentar lagi.',
+          };
+        }
+        await new Promise((resolve) => queue.push({ resolve }));
+      } else {
+        active += 1;
+      }
+
+      try {
+        if (maxRssMb > 0) {
+          const rssMb = getRssBytes() / (1024 * 1024);
+          if (rssMb >= maxRssMb) {
+            return {
+              ok: false,
+              code: 'INSUFFICIENT_MEMORY',
+              error: `Memori proses saat ini (${Math.round(rssMb)} MB) mendekati batas aman konversi (${maxRssMb} MB). Dokumen asli tetap aman; coba lagi beberapa saat.`,
+            };
+          }
+        }
+        return await fn();
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
+const defaultConversionLimiter = createConversionLimiter({
+  maxConcurrent: Math.max(1, Number(process.env.MAX_CONCURRENT_CONVERSIONS || 1)),
+  maxQueue: Math.max(1, Number(process.env.MAX_CONVERSION_QUEUE || 4)),
+  maxRssMb: Number(process.env.CONVERSION_MAX_RSS_MB || (process.env.RENDER ? 380 : 0)),
+});
+
 export async function runLibreOfficeConversion({
   inputBuffer,
   inputFilename,
@@ -304,7 +376,9 @@ export async function runLibreOfficeConversion({
   timeoutMs = Number(env.DOCX_PDF_TIMEOUT_MS || 120000),
   platform = process.platform,
   tempPrefix = 'runut-lo-',
+  limiter = defaultConversionLimiter,
 } = {}) {
+  return limiter.run(async () => {
   const detected = await detectLibreOffice({ env, execRunner, fileExists, platform });
   if (!detected.available) {
     return {
@@ -392,4 +466,5 @@ export async function runLibreOfficeConversion({
   } finally {
     cleanupTempDir(tmpDir);
   }
+  });
 }

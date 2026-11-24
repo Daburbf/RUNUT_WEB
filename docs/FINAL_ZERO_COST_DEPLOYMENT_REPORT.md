@@ -1,17 +1,27 @@
 # RUNUT — Final Zero-Cost Deployment Report
-## Cloudflare Pages Free + Oracle Cloud Always Free + Neon Free + Oracle Object Storage
+## Simplest Zero-Card Path: Cloudflare Pages Free + Render Free + Neon Free (PostgreSQL)
 
-## 1. Selected Zero-Cost Architecture
+> **Simplest Zero-Card Deployment Target (Academic / Demo / Limited Testing)**:
+> For the fewest cloud setup steps with **zero credit card required**, deploy using **Cloudflare Pages Free** (`functions/api/[[path]].js`, `BACKEND_ORIGIN=https://<actual-service>.onrender.com`) + **Render Free Web Service** (`render.yaml`, Docker Node 24 + LibreOffice, `OBJECT_STORAGE_PROVIDER=postgres`, `MAX_CONCURRENT_CONVERSIONS=1`, `CONVERSION_MAX_RSS_MB=380`) + **Neon Free PostgreSQL** (`BYTEA` original file persistence with **700 MB** managed storage / **4 GB/mo** outbound application-side safety limits).
+>
+> **Preserved Optional Alternatives**: Oracle Cloud Always Free ARM64 + OCI Object Storage (`OBJECT_STORAGE_PROVIDER=oci`, `deploy/oracle-always-free/docker-compose.oci.yml`) and Cloudflare R2 (`OBJECT_STORAGE_PROVIDER=r2`) remain fully implemented and tested as optional providers.
+
+## 1. Selected Zero-Cost Architecture (Render Free + Neon Free + Cloudflare Pages Free)
 
 | Component | Provider | Plan | Role & Published Free Allowance |
 | --- | --- | --- | --- |
-| **Frontend** | **Cloudflare Pages** | Free | Static Vite `dist/` on `https://<project>.pages.dev`, unlimited static bandwidth, commercial use permitted |
-| **Same-Origin API Proxy** | **Cloudflare Pages Functions** (`functions/api/[[path]].js`) | Free | Proxies `/api/*` to fixed `BACKEND_ORIGIN`, 100,000 requests/day free, preserves multiple `Set-Cookie` headers, strips upstream `Domain` |
+| **Frontend** | **Cloudflare Pages** | Free | Static Vite `dist/` on `https://<project>.pages.dev`, unlimited static bandwidth, zero credit card required |
+| **Same-Origin API Proxy** | **Cloudflare Pages Functions** (`functions/api/[[path]].js`) | Free | Proxies `/api/*` to fixed `BACKEND_ORIGIN=https://<actual-service>.onrender.com`, 100,000 requests/day free, preserves multiple `Set-Cookie` headers, strips upstream `Domain` |
+| **Backend + LibreOffice** | **Render Web Service** (`render.yaml` / `Dockerfile`) | Free | Node.js 24 + LibreOffice + Noto/DejaVu fonts + OCR; **512 MB RAM**, **750 free instance hours/mo**, sleeps after 15 min idle (~1 min cold start), ephemeral local disk, guarded by `MAX_CONCURRENT_CONVERSIONS=1` & `CONVERSION_MAX_RSS_MB=380` |
+| **Database + Document Storage** | **Neon PostgreSQL** (`OBJECT_STORAGE_PROVIDER=postgres`) | Free | **1 GB storage per project**, **100 CU-hours per project/mo**, **5 GB public network transfer per project/mo**, TLS, Migration v8; stores metadata + immutable `BYTEA` originals with **700 MB** storage & **4 GB/mo** outbound application-side safety limits |
+| **AI & Payments** | **OpenRouter (`:free`) -> Gemini Free -> Groq Free** + **Midtrans Sandbox** | Free / Sandbox | `STRICT_FREE_AI_ONLY=true`; `MIDTRANS_IS_PRODUCTION=false` |
+
+### Optional Higher-Capacity Alternative (Oracle Cloud Always Free + OCI Object Storage)
+| Component | Provider | Plan | Role & Published Free Allowance |
+| --- | --- | --- | --- |
 | **Backend + LibreOffice** | **Oracle Cloud A1** (`VM.Standard.A1.Flex`, Ubuntu ARM64) | Always Free | **2 OCPUs total, 12 GB memory total** (`1,500 OCPU-hours/mo`, `9,000 GB-hours/mo`), `200 GB` Always Free block volume; runs `Dockerfile` (`cpus: 1.5`, `mem_limit: 9g`) |
 | **HTTPS & Hostname** | **Caddy** + **DuckDNS** | Open Source / Free | Automatic Let's Encrypt TLS in front of RUNUT (`deploy/oracle-always-free/docker-compose.oci.yml`, `Caddyfile`) |
-| **Database** | **Neon PostgreSQL** | Free | **1 GB storage per project**, **100 CU-hours per project/mo**, **5 GB public network transfer per project/mo**, up to **20 GB combined** Free storage, TLS, Migration v8 |
-| **Primary Document Storage** | **Oracle Object Storage** (`server/src/services/ociObjectStorage.js`) | Always Free | **Free Trial**: 10 GB Standard / 10 GB Infrequent Access / 10 GB Archive; **Always Free-only (post-trial)**: 20 GB combined; **50,000 API requests/mo**, **10 TB outbound/mo**; private Standard bucket, AWS SigV4 with real OCI region (`OBJECT_STORAGE_PROVIDER=oci`, zero auto-failover to R2) |
-| **AI & Payments** | **OpenRouter (`:free`) -> Gemini Free -> Groq Free** + **Midtrans Sandbox** | Free / Sandbox | `STRICT_FREE_AI_ONLY=true`; `MIDTRANS_IS_PRODUCTION=false` |
+| **Optional Object Storage** | **Oracle Object Storage** (`server/src/services/ociObjectStorage.js`) | Always Free | **Free Trial**: 10 GB Standard / 10 GB Infrequent Access / 10 GB Archive; **Always Free-only (post-trial)**: 20 GB combined; **50,000 API requests/mo**, **10 TB outbound/mo**; private Standard bucket, AWS SigV4 with real OCI region (`OBJECT_STORAGE_PROVIDER=oci`, zero auto-failover to R2) |
 
 ---
 

@@ -1,9 +1,9 @@
-# RUNUT Zero-Cost Persistent Backend Blueprint
-# Architecture:
+# RUNUT Simple Zero-Cost Persistent Backend Blueprint (Academic / Demo / Limited Testing)
+# Architecture (Zero Credit Card Required):
 #   Frontend + Same-Origin Proxy : Cloudflare Pages Free + Pages Functions (functions/api/[[path]].js)
-#   Backend API + LibreOffice    : Render Free Web Service (Docker)
-#   Database                     : Neon Free PostgreSQL (external, non-expiring, TLS)
-#   Persistent Document Storage  : Cloudflare R2 Free (private bucket, S3-compatible)
+#   Backend API + LibreOffice    : Render Free Web Service (Docker, Node.js 24, 512 MB RAM)
+#   Database + Document Storage  : Neon Free PostgreSQL (external, non-expiring, TLS, BYTEA w/ 700 MB / 4 GB app safety limits)
+#   Optional Object Storage      : Cloudflare R2 (OBJECT_STORAGE_PROVIDER=r2) or Oracle OCI (OBJECT_STORAGE_PROVIDER=oci)
 services:
   - type: web
     name: runut-web
@@ -31,16 +31,18 @@ services:
         value: "lax"
       - key: COOKIE_SECURE
         value: "true"
-      - key: FILE_STORAGE_PROVIDER
-        value: "r2"
-      - key: R2_ACCOUNT_ID
-        sync: false
-      - key: R2_ACCESS_KEY_ID
-        sync: false
-      - key: R2_SECRET_ACCESS_KEY
-        sync: false
-      - key: R2_BUCKET
-        sync: false
+      - key: OBJECT_STORAGE_PROVIDER
+        value: "postgres"
+      - key: STRICT_STORAGE_QUOTA_MODE
+        value: "true"
+      - key: MAX_CONCURRENT_CONVERSIONS
+        value: "1"
+      - key: MAX_CONVERSION_QUEUE
+        value: "4"
+      - key: CONVERSION_MAX_RSS_MB
+        value: "380"
+      - key: DOCX_PDF_TIMEOUT_MS
+        value: "90000"
       - key: ADMIN_EMAILS
         sync: false
       - key: AI_PROVIDER

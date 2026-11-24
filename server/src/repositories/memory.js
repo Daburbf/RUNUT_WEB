@@ -778,6 +778,17 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
     async deleteByDocumentId(document_id) {
       return fileBlobs.delete(document_id);
     },
+    async getStorageMetrics() {
+      let managedBytes = 0;
+      let objectCount = 0;
+      for (const entry of fileBlobs.values()) {
+        if ((entry.storage_provider || 'postgres') === 'postgres') {
+          managedBytes += Number(entry.size_bytes || 0);
+          objectCount += 1;
+        }
+      }
+      return { managed_bytes: managedBytes, object_count: objectCount, total_db_bytes: managedBytes };
+    },
   };
 
   const r2Usage = {

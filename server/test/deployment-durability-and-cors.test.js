@@ -175,12 +175,13 @@ test('Cross-Origin Vercel Auth: exact CORS allowlist, SameSite=None; Secure; Htt
   }
 });
 
-test('Render Blueprint: avoids expiring 30-day Render free DB, uses same-origin lax cookies + R2, and defaults Midtrans to sandbox mode', () => {
+test('Render Blueprint: avoids expiring 30-day Render free DB, uses same-origin lax cookies + Neon PostgreSQL storage, and defaults Midtrans to sandbox mode', () => {
   const renderYaml = readFileSync(path.join(ROOT, 'render.yaml'), 'utf8');
   assert.doesNotMatch(renderYaml, /^databases:/m, 'render.yaml must not provision an expiring 30-day Render free PostgreSQL database');
   assert.match(renderYaml, /key:\s*DATABASE_URL\r?\n\s*sync:\s*false/);
   assert.match(renderYaml, /key:\s*MIDTRANS_IS_PRODUCTION\r?\n\s*value:\s*"false"/);
   assert.match(renderYaml, /key:\s*COOKIE_SAME_SITE\r?\n\s*value:\s*"lax"/);
   assert.match(renderYaml, /key:\s*COOKIE_SECURE\r?\n\s*value:\s*"true"/);
-  assert.match(renderYaml, /key:\s*FILE_STORAGE_PROVIDER\r?\n\s*value:\s*"r2"/);
+  assert.match(renderYaml, /key:\s*OBJECT_STORAGE_PROVIDER\r?\n\s*value:\s*"postgres"/);
+  assert.match(renderYaml, /key:\s*STRICT_STORAGE_QUOTA_MODE\r?\n\s*value:\s*"true"/);
 });

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { documentFiles, storage } from '../repositories/index.js';
+import { documentFiles, objectStorageUsage, storage } from '../repositories/index.js';
 import { HttpError } from '../middleware/errors.js';
 import {
   shouldUseR2Storage,
@@ -24,6 +24,39 @@ import {
   deleteOciObject,
 } from './ociObjectStorage.js';
 import { recordR2Delete } from './r2Quota.js';
+
+// Conservative Neon Free PostgreSQL application-side safety limits (NOT provider-side billing caps):
+//   - Managed document data : 700 MB    (Neon Free: 1 GB storage/project)
+//   - Total DB size ceiling : 850 MB    (leaves headroom for users/tokens/metadata below 1 GB)
+//   - Monthly outbound data : 4 GB/mo   (Neon Free: 5 GB public network transfer/project/mo)
+export const DEFAULT_PG_MAX_MANAGED_BYTES = 700 * 1024 * 1024;
+export const DEFAULT_PG_MAX_DATABASE_BYTES = 850 * 1024 * 1024;
+export const DEFAULT_PG_MAX_OUTBOUND_BYTES = 4 * 1024 * 1024 * 1024;
+
+export function getPostgresStorageLimits(env = process.env) {
+  const rawManaged = Number(env.PG_MAX_MANAGED_BYTES);
+  const rawDb = Number(env.PG_MAX_DATABASE_BYTES);
+  const rawOutbound = Number(env.PG_MAX_OUTBOUND_BYTES);
+  return {
+    maxManagedBytes: Math.min(
+      DEFAULT_PG_MAX_MANAGED_BYTES,
+      Math.max(1024, Number.isFinite(rawManaged) && rawManaged > 0 ? rawManaged : DEFAULT_PG_MAX_MANAGED_BYTES),
+    ),
+    maxDatabaseBytes: Math.min(
+      DEFAULT_PG_MAX_DATABASE_BYTES,
+      Math.max(1024, Number.isFinite(rawDb) && rawDb > 0 ? rawDb : DEFAULT_PG_MAX_DATABASE_BYTES),
+    ),
+    maxOutboundBytes: Math.min(
+      DEFAULT_PG_MAX_OUTBOUND_BYTES,
+      Math.max(1024, Number.isFinite(rawOutbound) && rawOutbound > 0 ? rawOutbound : DEFAULT_PG_MAX_OUTBOUND_BYTES),
+    ),
+    maxApiRequests: 10_000_000,
+  };
+}
+
+function currentUtcMonth() {
+  return new Date().toISOString().slice(0, 7);
+}
 
 export function resolveObjectStorageProvider(env = process.env) {
   const explicit = String(env.OBJECT_STORAGE_PROVIDER || env.FILE_STORAGE_PROVIDER || 'auto').trim().toLowerCase();
@@ -212,29 +245,77 @@ export async function saveOriginalUploadPersistent(docId, {
     };
   }
 
-  // Fallback for non-R2 environments (PostgreSQL BYTEA in production or memory/disk in dev/test)
+  // PostgreSQL BYTEA persistent storage (Neon Free primary for simple zero-cost deploy)
+  // or local memory/disk cache in dev/test.
+  const isPostgresAuthoritative = provider === 'postgres' || storage.driver === 'postgresql';
+  let pgReservationId = null;
+  const pgLimits = getPostgresStorageLimits(env);
+  if (isPostgresAuthoritative && userId && typeof objectStorageUsage?.reserve === 'function') {
+    const metrics = typeof documentFiles?.getStorageMetrics === 'function'
+      ? await documentFiles.getStorageMetrics().catch(() => null)
+      : null;
+    if (metrics && (
+      metrics.managed_bytes + buffer.length > pgLimits.maxManagedBytes
+      || metrics.total_db_bytes + buffer.length > pgLimits.maxDatabaseBytes
+    )) {
+      throw new HttpError(
+        503,
+        'Batas aman aplikasi kapasitas penyimpanan PostgreSQL (700 MB / batas Neon Free 1 GB) telah tercapai; dokumen lama tetap aman.',
+        { code: 'POSTGRES_STORAGE_CAPACITY_LIMIT' },
+      );
+    }
+    const res = await objectStorageUsage.reserve({
+      provider: 'postgres',
+      month: currentUtcMonth(),
+      operation: 'PutObject',
+      bytes: buffer.length,
+      requests: 1,
+      outbound_bytes: 0,
+      limits: pgLimits,
+    });
+    if (!res?.ok) {
+      throw new HttpError(
+        503,
+        'Batas aman aplikasi kapasitas penyimpanan PostgreSQL (700 MB / batas Neon Free 1 GB) telah tercapai; dokumen lama tetap aman.',
+        { code: 'POSTGRES_STORAGE_CAPACITY_LIMIT' },
+      );
+    }
+    pgReservationId = res.reservation?.id || null;
+  }
+
   const meta = saveOriginalUpload(id, { userId, buffer, ext: cleanExt, originalName: cleanName });
-  if (!meta) return null;
+  if (!meta) {
+    if (pgReservationId) await objectStorageUsage.release(pgReservationId, { billable_request_sent: false }).catch(() => {});
+    return null;
+  }
   if (userId && typeof documentFiles?.save === 'function') {
-    await documentFiles.save({
-      document_id: meta.docId,
-      user_id: userId,
-      ext: meta.ext,
-      original_name: meta.originalName,
-      size_bytes: meta.size,
-      sha256: meta.sha256,
-      content: buffer,
-      storage_provider: 'postgres',
-      storage_key: null,
-    }).catch((err) => {
-      if (storage.driver === 'postgresql') {
+    try {
+      await documentFiles.save({
+        document_id: meta.docId,
+        user_id: userId,
+        ext: meta.ext,
+        original_name: meta.originalName,
+        size_bytes: meta.size,
+        sha256: meta.sha256,
+        content: buffer,
+        storage_provider: 'postgres',
+        storage_key: null,
+      });
+      if (pgReservationId) {
+        await objectStorageUsage.commit(pgReservationId, { actual_bytes: meta.size, object_delta: 1 }).catch(() => {});
+      }
+    } catch (err) {
+      if (pgReservationId) {
+        await objectStorageUsage.release(pgReservationId, { billable_request_sent: false }).catch(() => {});
+      }
+      if (storage.driver === 'postgresql' || provider === 'postgres') {
         throw new HttpError(503, `Gagal menyimpan dokumen asli ke penyimpanan persisten: ${err.message}`, {
           code: 'PERSISTENT_STORAGE_FAILED',
         });
       }
-    });
+    }
   }
-  return { ...meta, storageProvider: storage.driver === 'postgresql' ? 'postgres' : 'local' };
+  return { ...meta, storageProvider: isPostgresAuthoritative ? 'postgres' : 'local' };
 }
 
 export function getOriginalUpload(docId) {
@@ -335,6 +416,39 @@ export async function getOriginalUploadPersistent(docId, {
         };
       }
       if (Buffer.isBuffer(row.buffer)) {
+        const actualHash = sha256Hex(row.buffer);
+        if (row.sha256 && actualHash !== row.sha256) {
+          throw new HttpError(500, 'Integritas berkas asli dari PostgreSQL tidak cocok (SHA-256 mismatch).', {
+            code: 'STORAGE_INTEGRITY_MISMATCH',
+          });
+        }
+        const provider = resolveObjectStorageProvider(env);
+        if ((provider === 'postgres' || storage.driver === 'postgresql') && typeof objectStorageUsage?.reserve === 'function') {
+          const pgLimits = getPostgresStorageLimits(env);
+          const outRes = await objectStorageUsage.reserve({
+            provider: 'postgres',
+            month: currentUtcMonth(),
+            operation: 'GetObject',
+            bytes: 0,
+            requests: 1,
+            outbound_bytes: row.buffer.length,
+            limits: pgLimits,
+          });
+          if (!outRes?.ok) {
+            throw new HttpError(
+              503,
+              'Batas aman aplikasi transfer jaringan bulanan PostgreSQL (4 GB/bulan, target Neon Free 5 GB) telah tercapai.',
+              { code: 'POSTGRES_OUTBOUND_LIMIT' },
+            );
+          }
+          if (outRes.reservation?.id) {
+            await objectStorageUsage.commit(outRes.reservation.id, {
+              actual_bytes: 0,
+              actual_outbound_bytes: row.buffer.length,
+              object_delta: 0,
+            }).catch(() => {});
+          }
+        }
         return {
           docId: row.document_id,
           userId: row.user_id,
@@ -411,6 +525,8 @@ export async function deleteOriginalUploadPersistent(docId, { env = process.env,
     } else if (row?.storage_provider === 'r2' && row.storage_key) {
       await deleteR2Object(row.storage_key, { env, fetchImpl }).catch(() => {});
       await recordR2Delete({ bytes: row.size_bytes || 0 });
+    } else if (row?.storage_provider === 'postgres' && row.size_bytes > 0 && typeof objectStorageUsage?.recordDelete === 'function') {
+      await objectStorageUsage.recordDelete({ provider: 'postgres', month: currentUtcMonth(), bytes: row.size_bytes }).catch(() => {});
     }
   }
   deleteOriginalUpload(id);
