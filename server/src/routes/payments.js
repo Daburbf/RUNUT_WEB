@@ -119,7 +119,7 @@ export const cancelPayment = asyncHandler(async (req, res) => {
   if (row.status === 'cancelled' || row.status === 'expired') {
     return res.json({ ok: true, cancelled: row.status === 'cancelled', payment: publicPayment(row) });
   }
-  const updated = (await payments.updateByOrderId(row.order_id, { status: 'cancelled' })) || { ...row, status: 'cancelled' };
+  const updated = (await payments.update(row.id, { status: 'cancelled' })) || { ...row, status: 'cancelled' };
   res.json({ ok: true, cancelled: true, payment: publicPayment(updated) });
 });
 
