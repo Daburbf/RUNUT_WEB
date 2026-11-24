@@ -2,7 +2,9 @@
 ## Simplest Zero-Card Path: Cloudflare Pages Free + Render Free + Neon Free (PostgreSQL)
 
 > **Simplest Zero-Card Deployment Target (Academic / Demo / Limited Testing)**:
-> For the fewest cloud setup steps with **zero credit card required**, deploy using **Cloudflare Pages Free** (`functions/api/[[path]].js`, `BACKEND_ORIGIN=https://<actual-service>.onrender.com`) + **Render Free Web Service** (`render.yaml`, Docker Node 24 + LibreOffice, `OBJECT_STORAGE_PROVIDER=postgres`, `MAX_CONCURRENT_CONVERSIONS=1`, `CONVERSION_MAX_RSS_MB=380`) + **Neon Free PostgreSQL** (`BYTEA` original file persistence with **700 MB** managed storage / **4 GB/mo** outbound application-side safety limits).
+> Two zero-card-required backend options are supported with **Cloudflare Pages Free** (`functions/api/[[path]].js`, `BACKEND_ORIGIN`) + **Neon Free PostgreSQL** (`runut-production` / `neondb` / `production` / `AWS Asia Pacific 1 (Singapore)`, `OBJECT_STORAGE_PROVIDER=postgres`, **700 MB** managed storage / **850 MB** total DB ceiling / **4 GB/mo** outbound application-side safety limits):
+> 1. **GitHub Codespaces Free** (`.devcontainer/devcontainer.json`, `scripts/start-codespaces-backend.sh`, 2-core / 8 GB RAM, 120 core-hours/mo, 15 GB-month storage, Node.js 24 + LibreOffice + Noto/DejaVu fonts, port `8080` Public, idle-stops after 30 min — not 24/7).
+> 2. **Render Free Web Service** (`render.yaml`, Docker Node 24 + LibreOffice, 512 MB RAM, `MAX_CONCURRENT_CONVERSIONS=1`, `CONVERSION_MAX_RSS_MB=380`).
 >
 > **Preserved Optional Alternatives**: Oracle Cloud Always Free ARM64 + OCI Object Storage (`OBJECT_STORAGE_PROVIDER=oci`, `deploy/oracle-always-free/docker-compose.oci.yml`) and Cloudflare R2 (`OBJECT_STORAGE_PROVIDER=r2`) remain fully implemented and tested as optional providers.
 
