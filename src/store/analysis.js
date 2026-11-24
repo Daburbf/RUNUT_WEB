@@ -182,7 +182,7 @@ export async function startJob({ text, title, file, aiConsent = true, idempotenc
     job.status = 'done'
     return data
   } catch (e) {
-    job.error = e.message || 'Analisis gagal. Coba lagi.'
+    job.error = friendlyAnalysisError(e)
     job.errorCode = e.code || ''
     job.errorDetails = e.details || null
     job.status = 'error'
@@ -192,6 +192,24 @@ export async function startJob({ text, title, file, aiConsent = true, idempotenc
     stopTick()
     job.elapsed = Math.floor((Date.now() - job.startedAt) / 1000)
   }
+}
+
+function friendlyAnalysisError(e) {
+  const code = String(e?.code || '').toUpperCase()
+  const raw = String(e?.message || '')
+  if (
+    code === 'AI_HTTP_503'
+    || code === 'AI_HTTP_429'
+    || code === 'AI_TIMEOUT'
+    || code === 'AI_FREE_QUOTA_EXHAUSTED'
+    || /HTTP 503|HTTP 429|UNAVAILABLE|high demand|overloaded/i.test(raw)
+  ) {
+    return 'Layanan analisis sedang sibuk. Silakan coba lagi beberapa saat lagi (token Anda tidak terpotong).'
+  }
+  if (code.startsWith('AI_') || /Provider AI|OPENROUTER|GEMINI|GROQ|\{"error"/i.test(raw)) {
+    return 'Terjadi kendala sementara saat menganalisis teks. Silakan coba lagi (token Anda tidak terpotong).'
+  }
+  return raw || 'Analisis gagal. Silakan coba lagi.'
 }
 
 export function clearJob() {
