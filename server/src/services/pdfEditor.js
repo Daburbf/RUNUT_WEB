@@ -3,6 +3,13 @@
 import { PDFDocument, StandardFonts, rgb, PDFName } from 'pdf-lib';
 import { createCanvas } from '@napi-rs/canvas';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import * as pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+
+// Register pdf.js worker in-memory so serverless bundlers (e.g. Vercel @vercel/nft) always include it
+// and pdfjsLib.getDocument never fails looking for an external worker file at runtime.
+if (!globalThis.pdfjsWorker && pdfjsWorker) {
+  globalThis.pdfjsWorker = pdfjsWorker;
+}
 import {
   classifyRegionBackground,
   buildBackgroundRestoration,

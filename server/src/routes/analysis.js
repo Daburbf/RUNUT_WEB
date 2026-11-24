@@ -127,14 +127,23 @@ export async function extractDocument(file) {
       let finalText = inspected.text || '';
       let ocrReport = null;
 
-      // Run OCR automatically only on scanned pages that contain actual page images (avoids OCR on empty/corrupt PDFs)
+      // Run OCR automatically only when the PDF does NOT already have sufficient native text
+      // (avoids slow 30-60s Tesseract downloads when page 1 is just a cover image on a normal text PDF).
       const hasScannedImagePages = (inspected.pages || []).some((p) => p.is_scanned && p.image_count > 0);
-      if (hasScannedImagePages && process.env.OCR_ENABLED !== 'false') {
-        ocrReport = await processPdfWithOcr(file.buffer, inspected, {
-          language: process.env.OCR_LANGUAGES || 'ind+eng',
-        });
-        if (ocrReport.combined_text) {
-          finalText = ocrReport.combined_text;
+      const nativeWordCount = countWords(finalText);
+      const shouldRunAutoOcr = hasScannedImagePages
+        && process.env.OCR_ENABLED !== 'false'
+        && (nativeWordCount < MIN_ANALYSIS_WORDS || !process.env.VERCEL);
+      if (shouldRunAutoOcr) {
+        try {
+          ocrReport = await processPdfWithOcr(file.buffer, inspected, {
+            language: process.env.OCR_LANGUAGES || 'ind+eng',
+          });
+          if (ocrReport?.combined_text && countWords(ocrReport.combined_text) > nativeWordCount) {
+            finalText = ocrReport.combined_text;
+          }
+        } catch (ocrErr) {
+          console.warn('[extractDocument:pdf] OCR skipped/failed, keeping native text:', ocrErr?.message || ocrErr);
         }
       }
 
@@ -161,6 +170,7 @@ export async function extractDocument(file) {
       if (/skrip aktif|aksi berbahaya|melebihi batas aman maksimum/i.test(err?.message || '')) {
         throw new HttpError(400, err.message, { code: 'UNSAFE_PDF_DOCUMENT' });
       }
+      console.error('[extractDocument:pdf] failed:', err?.message || err);
       return { text: '', ext: 'pdf', metadata: { format: 'pdf' } };
     }
   }

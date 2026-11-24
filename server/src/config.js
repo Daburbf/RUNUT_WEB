@@ -7,10 +7,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
 
+const cleanEnv = (v) => String(v ?? '').replace(/^\uFEFF/, '').trim();
+
 const ephemeral = [];
 
 function secretFor(name) {
-  const value = process.env[name];
+  const value = cleanEnv(process.env[name]);
   if (value) {
     if (value.length < 32) console.warn(`[config] ${name} lebih pendek dari 32 karakter.`);
     return value;
@@ -38,28 +40,28 @@ export const config = {
   corsOrigins,
 
   database: {
-    url: process.env.DATABASE_URL || '',
+    url: cleanEnv(process.env.DATABASE_URL),
     poolMax: Number(process.env.PG_POOL_MAX || 10),
     idleTimeoutMs: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
     connectionTimeoutMs: Number(process.env.PG_CONNECTION_TIMEOUT_MS || 5000),
     statementTimeoutMs: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 15000),
-    ssl: process.env.DATABASE_SSL || '',
+    ssl: cleanEnv(process.env.DATABASE_SSL),
   },
 
   jwt: {
     accessSecret: secretFor('JWT_ACCESS_SECRET'),
-    accessTtl: process.env.JWT_ACCESS_TTL || '1h',
+    accessTtl: cleanEnv(process.env.JWT_ACCESS_TTL) || '1h',
     refreshDays: Number(process.env.REFRESH_TOKEN_DAYS || 30),
   },
 
   ai: {
-    provider: (process.env.AI_PROVIDER || 'openrouter').toLowerCase(),
-    baseUrl: (process.env.OPENROUTER_BASE_URL || process.env.AI_BASE_URL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (process.env.AI_PROVIDER?.toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1'))).replace(/\/$/, ''),
-    apiKey: process.env.OPENROUTER_API_KEY || process.env.AI_API_KEY || '',
-    model: process.env.OPENROUTER_MODEL || process.env.AI_MODEL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : 'particle-ai/particle-1:free'),
+    provider: (cleanEnv(process.env.AI_PROVIDER) || 'openrouter').toLowerCase(),
+    baseUrl: (cleanEnv(process.env.OPENROUTER_BASE_URL) || cleanEnv(process.env.AI_BASE_URL) || (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1'))).replace(/\/$/, ''),
+    apiKey: cleanEnv(process.env.OPENROUTER_API_KEY) || cleanEnv(process.env.AI_API_KEY),
+    model: cleanEnv(process.env.OPENROUTER_MODEL) || cleanEnv(process.env.AI_MODEL) || (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : 'particle-ai/particle-1:free'),
     timeoutMs: Number(process.env.AI_TIMEOUT_MS || 90000),
-    geminiApiKey: process.env.GEMINI_API_KEY || '',
-    geminiModel: process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
+    geminiApiKey: cleanEnv(process.env.GEMINI_API_KEY),
+    geminiModel: cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.1-flash-lite',
   },
 
   admin: {
