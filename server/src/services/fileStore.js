@@ -17,6 +17,23 @@ import {
   getR2Object,
   deleteR2Object,
 } from './r2Storage.js';
+import {
+  isOciConfigured,
+  putOciObject,
+  getOciObject,
+  deleteOciObject,
+} from './ociObjectStorage.js';
+import { recordR2Delete } from './r2Quota.js';
+
+export function resolveObjectStorageProvider(env = process.env) {
+  const explicit = String(env.OBJECT_STORAGE_PROVIDER || env.FILE_STORAGE_PROVIDER || 'auto').trim().toLowerCase();
+  if (explicit === 'oci') return 'oci';
+  if (explicit === 'r2') return 'r2';
+  if (explicit === 'postgres' || explicit === 'local') return explicit;
+  if (isOciConfigured(env)) return 'oci';
+  if (shouldUseR2Storage(env)) return 'r2';
+  return 'postgres';
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, '../../.data/uploads');
@@ -90,9 +107,54 @@ export async function saveOriginalUploadPersistent(docId, {
 
   const digest = sha256Hex(buffer);
   const cleanName = String(originalName || `document.${cleanExt}`).slice(0, 255);
-  const useR2 = shouldUseR2Storage(env);
+  const provider = resolveObjectStorageProvider(env);
 
-  if (useR2) {
+  // OCI Object Storage primary path — ZERO automatic failover to R2!
+  if (provider === 'oci') {
+    if (!isOciConfigured(env)) {
+      throw new HttpError(
+        503,
+        'Penyimpanan OCI Object Storage diaktifkan (OBJECT_STORAGE_PROVIDER=oci) tetapi kredensial OCI belum lengkap. Tidak ada failover otomatis ke R2.',
+        { code: 'OCI_NOT_CONFIGURED' },
+      );
+    }
+    if (!userId) {
+      throw new HttpError(400, 'ID pemilik dokumen wajib tersedia untuk penyimpanan OCI privat.', { code: 'MISSING_OWNER' });
+    }
+    const objectKey = buildPrivateObjectKey(userId, id, cleanExt);
+    await putOciObject(objectKey, buffer, {
+      contentType: mimeForExt(cleanExt),
+      sha256: digest,
+      env,
+      fetchImpl,
+    });
+    if (typeof documentFiles?.save === 'function') {
+      await documentFiles.save({
+        document_id: id,
+        user_id: userId,
+        ext: cleanExt,
+        original_name: cleanName,
+        size_bytes: buffer.length,
+        sha256: digest,
+        content: null,
+        storage_provider: 'oci',
+        storage_key: objectKey,
+      });
+    }
+    return {
+      docId: id,
+      userId,
+      ext: cleanExt,
+      originalName: cleanName,
+      size: buffer.length,
+      sha256: digest,
+      storageProvider: 'oci',
+      storageKey: objectKey,
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  if (provider === 'r2') {
     if (!isR2Configured(env)) {
       throw new HttpError(
         503,
@@ -197,10 +259,39 @@ export async function getOriginalUploadPersistent(docId, {
   const id = safeDocId(docId);
   if (!id) return null;
 
-  // 1. Authoritative persistent repository lookup (enforces per-user user_id isolation & R2 retrieval)
+  // 1. Authoritative persistent repository lookup (enforces per-user user_id isolation & provider-specific retrieval)
   if (typeof documentFiles?.findByDocumentId === 'function') {
     const row = await documentFiles.findByDocumentId(id, { user_id: userId }).catch(() => null);
     if (row) {
+      if (row.storage_provider === 'oci' && row.storage_key) {
+        const fetched = await getOciObject(row.storage_key, { expectedBytes: row.size_bytes || 0, env, fetchImpl });
+        if (!fetched.ok) {
+          throw new HttpError(
+            fetched.status === 404 ? 404 : 503,
+            fetched.code === 'OCI_OBJECT_MISSING'
+              ? 'Berkas dokumen asli tidak ditemukan di OCI Object Storage.'
+              : 'OCI Object Storage sedang tidak dapat dijangkau. Coba lagi nanti.',
+            { code: fetched.code },
+          );
+        }
+        const actualHash = sha256Hex(fetched.buffer);
+        if (row.sha256 && actualHash !== row.sha256) {
+          throw new HttpError(500, 'Integritas berkas asli dari OCI Object Storage tidak cocok (SHA-256 mismatch).', {
+            code: 'STORAGE_INTEGRITY_MISMATCH',
+          });
+        }
+        return {
+          docId: row.document_id,
+          userId: row.user_id,
+          ext: row.ext,
+          originalName: row.original_name,
+          size: row.size_bytes,
+          sha256: row.sha256,
+          storageProvider: 'oci',
+          storageKey: row.storage_key,
+          buffer: fetched.buffer,
+        };
+      }
       if (row.storage_provider === 'r2' && row.storage_key) {
         const fetched = await getR2Object(row.storage_key, { env, fetchImpl });
         if (!fetched.ok) {
@@ -302,8 +393,11 @@ export async function deleteOriginalUploadPersistent(docId, { env = process.env,
   if (!id) return;
   if (typeof documentFiles?.findByDocumentId === 'function') {
     const row = await documentFiles.findByDocumentId(id).catch(() => null);
-    if (row?.storage_provider === 'r2' && row.storage_key) {
+    if (row?.storage_provider === 'oci' && row.storage_key) {
+      await deleteOciObject(row.storage_key, { knownBytes: row.size_bytes || 0, env, fetchImpl }).catch(() => {});
+    } else if (row?.storage_provider === 'r2' && row.storage_key) {
       await deleteR2Object(row.storage_key, { env, fetchImpl }).catch(() => {});
+      await recordR2Delete({ bytes: row.size_bytes || 0 });
     }
   }
   deleteOriginalUpload(id);

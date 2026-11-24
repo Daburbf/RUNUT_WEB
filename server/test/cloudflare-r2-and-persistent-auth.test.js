@@ -22,6 +22,10 @@ import {
   generateR2SignedDownloadUrl,
 } from '../src/services/r2Storage.js';
 import {
+  reserveR2Operation,
+  getR2QuotaSnapshot,
+} from '../src/services/r2Quota.js';
+import {
   onRequest as pagesProxyOnRequest,
   parseTrustedBackendOrigin,
   sanitizeSetCookieForSameOrigin,
@@ -349,10 +353,18 @@ test('Cloudflare R2 Storage: PDF & DOCX survive restart with SHA-256 integrity, 
     const crossRead = await getOriginalUploadPersistent(pdfDoc.id, { userId: otherUserId, env: r2Env });
     assert.equal(crossRead, null);
 
-    // Signed download URL generation
-    const signedUrl = generateR2SignedDownloadUrl(savedPdf.storageKey, { expiresInSeconds: 300, env: r2Env });
+    // Strict quota mode blocks reusable signed download URLs by default; compatibility mode requires explicit opt-out
+    assert.throws(
+      () => generateR2SignedDownloadUrl(savedPdf.storageKey, { expiresInSeconds: 300, env: r2Env }),
+      (err) => err?.code === 'SIGNED_URL_DISABLED_IN_STRICT_QUOTA_MODE' && err?.status === 403,
+    );
+    const signedUrl = generateR2SignedDownloadUrl(savedPdf.storageKey, {
+      expiresInSeconds: 120,
+      allowCompatibilitySignedUrl: true,
+      env: { ...r2Env, STRICT_R2_QUOTA_MODE: 'false' },
+    });
     assert.match(signedUrl, /X-Amz-Algorithm=AWS4-HMAC-SHA256/);
-    assert.match(signedUrl, /X-Amz-Expires=300/);
+    assert.match(signedUrl, /X-Amz-Expires=120/);
     assert.match(signedUrl, /X-Amz-Signature=[0-9a-f]{64}/);
 
     // Missing R2 object returns controlled 404 R2_OBJECT_MISSING error
@@ -380,4 +392,47 @@ test('Cloudflare R2 Storage: PDF & DOCX survive restart with SHA-256 integrity, 
   } finally {
     await new Promise((r) => mockR2.server.close(r));
   }
+});
+
+// 4. Persistent R2 Application-Side Safety Quota Tests (80% free-tier margin + concurrency guard)
+test('Cloudflare R2 Safety Quotas: blocks uploads before 8 GB / Class A / Class B thresholds and prevents concurrent bypass without deleting existing files', async () => {
+  await initStorage('', { persistPath: null });
+  const tightEnv = {
+    R2_MAX_MANAGED_BYTES: '2048',
+    R2_CLASS_A_MONTHLY_LIMIT: '3',
+    R2_CLASS_B_MONTHLY_LIMIT: '2',
+  };
+
+  // Concurrent reservation: two 1500-byte uploads cannot both reserve inside a 2048-byte cap
+  const r1 = await reserveR2Operation('PutObject', { bytes: 1500, env: tightEnv });
+  await assert.rejects(
+    () => reserveR2Operation('PutObject', { bytes: 1500, env: tightEnv }),
+    (err) => err?.code === 'R2_STORAGE_QUOTA_LIMIT' && err?.status === 503,
+  );
+  await r1.commit();
+
+  // Existing committed bytes stay preserved (never auto-deleted to recover quota)
+  const snap = await getR2QuotaSnapshot({ env: tightEnv });
+  assert.equal(snap.managed_bytes, 1500);
+  assert.equal(snap.object_count, 1);
+
+  // Class A limit reached after 3rd op
+  const r2 = await reserveR2Operation('PutObject', { bytes: 100, env: tightEnv });
+  await r2.commit();
+  const r3 = await reserveR2Operation('PutObject', { bytes: 100, env: tightEnv });
+  await r3.commit();
+  await assert.rejects(
+    () => reserveR2Operation('PutObject', { bytes: 50, env: tightEnv }),
+    (err) => err?.code === 'R2_CLASS_A_QUOTA_LIMIT' && err?.status === 503,
+  );
+
+  // Class B read limit enforced
+  const b1 = await reserveR2Operation('GetObject', { env: tightEnv });
+  await b1.commit();
+  const b2 = await reserveR2Operation('GetObject', { env: tightEnv });
+  await b2.commit();
+  await assert.rejects(
+    () => reserveR2Operation('GetObject', { env: tightEnv }),
+    (err) => err?.code === 'R2_CLASS_B_QUOTA_LIMIT' && err?.status === 503,
+  );
 });

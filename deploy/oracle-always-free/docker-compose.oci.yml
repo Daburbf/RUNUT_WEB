@@ -1,0 +1,62 @@
+# RUNUT — Oracle Cloud Always Free (Ubuntu ARM64 / VM.Standard.A1.Flex) Docker Compose
+# Official Always Free VM.Standard.A1.Flex allowance:
+#   - 2 OCPUs total, 12 GB memory total (1,500 OCPU-hours & 9,000 GB-hours/month)
+#   - 200 GB Always Free block-volume allocation
+# Resource limits below stay strictly inside the Always Free allowance (leaving headroom for OS + Caddy).
+# Connects to external Neon Free PostgreSQL + Oracle Object Storage Always Free private storage.
+services:
+  runut-api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cpus: 1.5
+    mem_limit: 9g
+    env_file:
+      - ../../server/.env
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      COOKIE_SAME_SITE: lax
+      COOKIE_SECURE: "true"
+      DATABASE_SSL: "true"
+      PG_CONNECTION_TIMEOUT_MS: "10000"
+      OBJECT_STORAGE_PROVIDER: oci
+      STRICT_STORAGE_QUOTA_MODE: "true"
+      OCI_OS_ALWAYS_FREE_VERIFIED: ${OCI_OS_ALWAYS_FREE_VERIFIED:-false}
+      STRICT_R2_QUOTA_MODE: "true"
+      STRICT_FREE_AI_ONLY: "true"
+      MIDTRANS_IS_PRODUCTION: "false"
+      DOCX_PDF_CONVERSION_ENABLED: "true"
+    expose:
+      - "8080"
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 512m
+    depends_on:
+      runut-api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BACKEND_DOMAIN: ${BACKEND_DOMAIN:?Set BACKEND_DOMAIN (e.g. a free nip.io/sslip.io or DuckDNS HTTPS hostname)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -209,7 +209,7 @@ jobs:
           cat /tmp/health.json
           node -e "
             const h = JSON.parse(require('fs').readFileSync('/tmp/health.json','utf8'));
-            if (!h.ok || h.database.driver !== 'postgresql' || h.database.schema_version < 5) {
+            if (!h.ok || h.database.driver !== 'postgresql' || h.database.schema_version < 8) {
               console.error('Health check failed:', h);
               process.exit(1);
             }
@@ -294,4 +294,4 @@ jobs:
         env:
           NODE_ENV: test
           JWT_ACCESS_SECRET: ci-security-test-secret-minimum-32-characters
-        run: node --test server/test/security-audit-regression.test.js server/test/security-and-acceptance.test.js server/test/qris-dynamic-payment.test.js server/test/download-token-safety.test.js
+        run: node --test server/test/security-audit-regression.test.js server/test/security-and-acceptance.test.js server/test/qris-dynamic-payment.test.js server/test/download-token-safety.test.js server/test/r2-quota-audit.test.js server/test/cloudflare-r2-and-persistent-auth.test.js server/test/oci-object-storage.test.js

@@ -1,5 +1,7 @@
 # RUNUT — Strictly Zero-Cost Deployment & Persistent Login Architecture Report
 
+> **Primary Architecture Note**: For strict zero-billing-exposure deployments, **Oracle Cloud Always Free (A1 ARM64 + OCI Object Storage Always Free)** is now the primary backend & storage target (see [FINAL_ZERO_COST_DEPLOYMENT_REPORT.md](./FINAL_ZERO_COST_DEPLOYMENT_REPORT.md)). This Render + R2 blueprint remains fully supported as an explicit alternative (`OBJECT_STORAGE_PROVIDER=r2`).
+
 ## 1. Final Zero-Cost Infrastructure Architecture
 
 | Layer | Service | Plan | Role | Published Free Allowance & Key Limits |
@@ -7,8 +9,8 @@
 | **Frontend Hosting** | **Cloudflare Pages** | Free | Serves static Vue/Vite `dist/` on `https://<project>.pages.dev` | Unlimited static requests/bandwidth, 500 builds/mo, free HTTPS, commercial use permitted |
 | **Same-Origin API Proxy** | **Cloudflare Pages Functions** (`functions/api/[[path]].js`) | Free | Proxies `/api/*` on the Pages origin to fixed `BACKEND_ORIGIN` | 100,000 Workers/Functions requests/day (shared free quota); static assets bypass Functions |
 | **Backend API + Document Engine** | **Render Web Service** (`render.yaml` / `Dockerfile`) | Free | Node.js/Express + LibreOffice + PDF/DOCX/OCR processing | 750 free instance hours/mo, 512 MB RAM, shared CPU, spins down after 15 min idle (~30–60 s cold start), ephemeral local disk |
-| **Primary Database** | **Neon PostgreSQL** | Free | Users, tokens, refresh hashes, payments, document metadata (`document_files` v6) | 0.5 GB storage, non-expiring, TLS required, scale-to-zero auto-suspend (~1–3 s wake-up; `PG_CONNECTION_TIMEOUT_MS=10000`) |
-| **Persistent Document Storage** | **Cloudflare R2** (`server/src/services/r2Storage.js`) | Free | Authoritative private storage for immutable original PDF/DOCX/DOC uploads | 10 GB-month storage, 1M Class A ops/mo, 10M Class B ops/mo, $0 egress (requires payment method on file for R2 activation; stays $0 within free tier) |
+| **Primary Database** | **Neon PostgreSQL** | Free | Users, tokens, refresh hashes, payments, document metadata & persistent R2 quota accounting (Migration v7) | 1 GB storage per project, 100 CU-hours per project/mo, up to 20 GB combined Free storage, non-expiring, TLS required (`PG_CONNECTION_TIMEOUT_MS=10000`) |
+| **Persistent Document Storage** | **Cloudflare R2** (`server/src/services/r2Storage.js`) | Free | Authoritative private storage for immutable original PDF/DOCX/DOC uploads (`STANDARD` class, strict quota mode) | 10 GB-month Standard storage, 1M Class A ops/mo, 10M Class B ops/mo, $0 egress (payment method required; no provider-side hard billing cap — guarded by PostgreSQL application-side safety limits) |
 | **AI Providers** | **OpenRouter (`:free`) -> Gemini Free -> Groq Free** | Free Only | Writing analysis & revisions (`STRICT_FREE_AI_ONLY=true`) | Upstream RPM/RPD free limits; paid models/providers strictly blocked |
 | **Payments** | **Midtrans QRIS** | Sandbox (`MIDTRANS_IS_PRODUCTION=false`) | Safe sandbox testing only | No live payment collection enabled without explicit authorization |
 
@@ -63,7 +65,7 @@ Implemented in `server/src/services/r2Storage.js`, `server/src/services/fileStor
 
 | Verification Layer | Status | Actual Evidence |
 | --- | --- | --- |
-| **Locally Verified (Windows, No Docker)** | **PASS** | **187 total backend tests: 184 passed, 0 failed, 3 conditionally skipped** (`postgres.test.js` live PG + `windows-document-processing.test.js` live `DOC->DOCX` & `DOCX->PDF`); `cloudflare-r2-and-persistent-auth.test.js` (3/3 pass); `deployment-durability-and-cors.test.js` (3/3 pass); `vite build` passed in 2.10 s; `npm audit` 0 high/critical vulns. |
+| **Locally Verified (Windows, No Docker)** | **PASS** | **188 total backend tests: 185 passed, 0 failed, 3 conditionally skipped** (`postgres.test.js` live PG + `windows-document-processing.test.js` live `DOC->DOCX` & `DOCX->PDF`); `cloudflare-r2-and-persistent-auth.test.js` (4/4 pass including R2 80% safety quota guard); `deployment-durability-and-cors.test.js` (3/3 pass); `vite build` passed in 2.12 s; `npm audit` 0 high/critical vulns. |
 | **CI Configured (GitHub Actions)** | **Configured, Pending Push** | `.github/workflows/ci.yml` includes strict `postgres-integration-tests` (`postgres:16-alpine`), `libreoffice-conversion-tests` (Ubuntu `libreoffice-writer`), `windows-native-tests`, `production-smoke-e2e`, `security-sast-semgrep`, `security-secrets-gitleaks`, `security-trivy-scan`, and `security-regression-tests`. |
 | **Deployed & Remotely Verified** | **Not Yet Deployed** | Cloud CLIs/credentials (`wrangler`, `render`, `neon`, `gh`) are not available on this local workstation. No live `pages.dev` or `onrender.com` URL is claimed yet. |
 | **Not Yet Verified Remotely** | **Pending Live Deploy** | Real browser restart cookie test on `https://<project>.pages.dev`, live Neon cold-start wake-up, live R2 bucket persistence across Render redeploy, and live Render Free 512 MB RAM LibreOffice/OCR execution under real load. |

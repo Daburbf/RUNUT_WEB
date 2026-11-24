@@ -980,8 +980,8 @@ export async function createPostgresRepositories(connectionString) {
   const documentFiles = {
     async save({ document_id, user_id, ext, original_name, size_bytes, sha256, content = null, storage_provider = 'postgres', storage_key = null }) {
       if (!isUuid(document_id) || !isUuid(user_id)) return null;
-      const isR2 = storage_provider === 'r2';
-      if (!isR2 && (!Buffer.isBuffer(content) || content.length === 0)) return null;
+      const isExternal = storage_provider === 'r2' || storage_provider === 'oci';
+      if (!isExternal && (!Buffer.isBuffer(content) || content.length === 0)) return null;
       const finalSize = Number(size_bytes || (Buffer.isBuffer(content) ? content.length : 0));
       if (finalSize <= 0 || finalSize > 10 * 1024 * 1024) {
         throw new Error('Ukuran berkas melebihi batas penyimpanan persisten (10 MB).');
@@ -990,7 +990,7 @@ export async function createPostgresRepositories(connectionString) {
         `insert into document_files (document_id, user_id, ext, original_name, size_bytes, sha256, content, storage_provider, storage_key)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          on conflict (document_id) do nothing`,
-        [document_id, user_id, ext, String(original_name || `document.${ext}`).slice(0, 255), finalSize, sha256, isR2 ? null : content, storage_provider, storage_key],
+        [document_id, user_id, ext, String(original_name || `document.${ext}`).slice(0, 255), finalSize, sha256, isExternal ? null : content, storage_provider, storage_key],
       );
       return { document_id, user_id, ext, original_name, size_bytes: finalSize, sha256, storage_provider, storage_key };
     },
@@ -1015,6 +1015,471 @@ export async function createPostgresRepositories(connectionString) {
       if (!isUuid(document_id)) return false;
       const { rowCount } = await pool.query('delete from document_files where document_id = $1', [document_id]);
       return (rowCount || 0) > 0;
+    },
+  };
+
+  const r2Usage = {
+    async reserve({
+      month,
+      operation,
+      op_class,
+      bytes = 0,
+      idempotency_key = null,
+      ttl_seconds = 180,
+      limits = {},
+    }) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `insert into r2_monthly_usage (month) values ($1) on conflict (month) do nothing`,
+          [month],
+        );
+        const { rows: usageRows } = await client.query(
+          'select * from r2_monthly_usage where month = $1 for update',
+          [month],
+        );
+        const usage = usageRows[0];
+
+        if (idempotency_key) {
+          const { rows: dupRows } = await client.query(
+            'select * from r2_quota_reservations where idempotency_key = $1',
+            [idempotency_key],
+          );
+          if (dupRows[0]) {
+            await client.query('commit');
+            return { ok: true, duplicate: true, reservation: dupRows[0], usage };
+          }
+        }
+
+        // Expire abandoned reservations automatically inside the lock
+        await client.query(
+          `update r2_quota_reservations
+              set state = 'expired', updated_at = now()
+            where month = $1 and state = 'reserved' and expires_at <= now()`,
+          [month],
+        );
+
+        const { rows: activeRows } = await client.query(
+          `select coalesce(sum(reserved_bytes), 0)::bigint as reserved_bytes,
+                  count(*) filter (where op_class = 'class_a')::bigint as reserved_a,
+                  count(*) filter (where op_class = 'class_b')::bigint as reserved_b
+             from r2_quota_reservations
+            where month = $1 and state = 'reserved'`,
+          [month],
+        );
+        const activeBytes = Number(activeRows[0]?.reserved_bytes || 0);
+        const activeA = Number(activeRows[0]?.reserved_a || 0);
+        const activeB = Number(activeRows[0]?.reserved_b || 0);
+
+        if (usage.quota_halted && op_class !== 'free') {
+          await client.query('rollback');
+          return { ok: false, code: 'R2_QUOTA_HALTED_BY_RECONCILIATION', usage };
+        }
+
+        const addBytes = Math.max(0, Math.trunc(Number(bytes) || 0));
+        const maxBytes = Number(limits.maxManagedBytes || 8 * 1024 * 1024 * 1024);
+        const maxA = Number(limits.maxClassAOps || 800_000);
+        const maxB = Number(limits.maxClassBOps || 8_000_000);
+
+        if (addBytes > 0 && Number(usage.managed_bytes) + activeBytes + addBytes > maxBytes) {
+          await client.query('rollback');
+          return { ok: false, code: 'R2_STORAGE_QUOTA_LIMIT', usage };
+        }
+        if (op_class === 'class_a' && Number(usage.class_a_ops) + activeA + 1 > maxA) {
+          await client.query('rollback');
+          return { ok: false, code: 'R2_CLASS_A_QUOTA_LIMIT', usage };
+        }
+        if (op_class === 'class_b' && Number(usage.class_b_ops) + activeB + 1 > maxB) {
+          await client.query('rollback');
+          return { ok: false, code: 'R2_CLASS_B_QUOTA_LIMIT', usage };
+        }
+
+        const expiresAt = new Date(Date.now() + Math.max(10, Number(ttl_seconds) || 180) * 1000);
+        const { rows: resvRows } = await client.query(
+          `insert into r2_quota_reservations (id, idempotency_key, month, operation, op_class, reserved_bytes, state, expires_at)
+           values ($1, $2, $3, $4, $5, $6, 'reserved', $7)
+           returning *`,
+          [randomUUID(), idempotency_key, month, operation, op_class, addBytes, expiresAt],
+        );
+        await client.query('commit');
+        return { ok: true, duplicate: false, reservation: resvRows[0], usage };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async commit(id, { actual_bytes = null } = {}) {
+      if (!isUuid(id)) return null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select * from r2_quota_reservations where id = $1 for update', [id]);
+        const r = rows[0];
+        if (!r || r.state !== 'reserved') {
+          await client.query('commit');
+          return r || null;
+        }
+        const addBytes = actual_bytes != null ? Math.max(0, Math.trunc(Number(actual_bytes) || 0)) : Number(r.reserved_bytes || 0);
+        const addObj = addBytes > 0 ? 1 : 0;
+        const addA = r.op_class === 'class_a' ? 1 : 0;
+        const addB = r.op_class === 'class_b' ? 1 : 0;
+
+        await client.query(
+          `update r2_monthly_usage
+              set managed_bytes = managed_bytes + $2,
+                  object_count = object_count + $3,
+                  class_a_ops = class_a_ops + $4,
+                  class_b_ops = class_b_ops + $5,
+                  updated_at = now()
+            where month = $1`,
+          [r.month, addBytes, addObj, addA, addB],
+        );
+        const { rows: updated } = await client.query(
+          `update r2_quota_reservations set state = 'committed', updated_at = now() where id = $1 returning *`,
+          [id],
+        );
+        await client.query('commit');
+        return updated[0];
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async release(id, { billable_request_sent = false } = {}) {
+      if (!isUuid(id)) return null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select * from r2_quota_reservations where id = $1 for update', [id]);
+        const r = rows[0];
+        if (!r || r.state !== 'reserved') {
+          await client.query('commit');
+          return r || null;
+        }
+        if (billable_request_sent) {
+          const addA = r.op_class === 'class_a' ? 1 : 0;
+          const addB = r.op_class === 'class_b' ? 1 : 0;
+          await client.query(
+            `update r2_monthly_usage
+                set class_a_ops = class_a_ops + $2,
+                    class_b_ops = class_b_ops + $3,
+                    updated_at = now()
+              where month = $1`,
+            [r.month, addA, addB],
+          );
+        }
+        const { rows: updated } = await client.query(
+          `update r2_quota_reservations set state = 'released', updated_at = now() where id = $1 returning *`,
+          [id],
+        );
+        await client.query('commit');
+        return updated[0];
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async recordDelete({ month, bytes = 0 }) {
+      const dropBytes = Math.max(0, Math.trunc(Number(bytes) || 0));
+      await pool.query(
+        `insert into r2_monthly_usage (month) values ($1) on conflict (month) do nothing`,
+        [month],
+      );
+      await pool.query(
+        `update r2_monthly_usage
+            set managed_bytes = greatest(0, managed_bytes - $2),
+                object_count = greatest(0, object_count - 1),
+                updated_at = now()
+          where month = $1`,
+        [month, dropBytes],
+      );
+    },
+
+    async reconcile({ month, provider_storage_bytes = null, provider_class_a_ops = null, provider_class_b_ops = null, status = 'ok', halt = false }) {
+      await pool.query(`insert into r2_monthly_usage (month) values ($1) on conflict (month) do nothing`, [month]);
+      const { rows } = await pool.query(
+        `update r2_monthly_usage
+            set managed_bytes = greatest(managed_bytes, coalesce($2, managed_bytes)),
+                class_a_ops = greatest(class_a_ops, coalesce($3, class_a_ops)),
+                class_b_ops = greatest(class_b_ops, coalesce($4, class_b_ops)),
+                reconciled_storage_bytes = $2,
+                reconciled_class_a_ops = $3,
+                reconciled_class_b_ops = $4,
+                reconciliation_status = $5,
+                last_reconciled_at = now(),
+                quota_halted = $6,
+                updated_at = now()
+          where month = $1
+          returning *`,
+        [month, provider_storage_bytes, provider_class_a_ops, provider_class_b_ops, status, Boolean(halt)],
+      );
+      return rows[0];
+    },
+
+    async getSnapshot(month) {
+      await pool.query(`insert into r2_monthly_usage (month) values ($1) on conflict (month) do nothing`, [month]);
+      await pool.query(
+        `update r2_quota_reservations set state = 'expired', updated_at = now()
+          where month = $1 and state = 'reserved' and expires_at <= now()`,
+        [month],
+      );
+      const { rows: uRows } = await pool.query('select * from r2_monthly_usage where month = $1', [month]);
+      const { rows: aRows } = await pool.query(
+        `select coalesce(sum(reserved_bytes), 0)::bigint as reserved_bytes,
+                count(*) filter (where op_class = 'class_a')::bigint as reserved_a,
+                count(*) filter (where op_class = 'class_b')::bigint as reserved_b
+           from r2_quota_reservations
+          where month = $1 and state = 'reserved'`,
+        [month],
+      );
+      const u = uRows[0];
+      return {
+        month: u.month,
+        managed_bytes: Number(u.managed_bytes || 0),
+        reserved_bytes: Number(aRows[0]?.reserved_bytes || 0),
+        object_count: Number(u.object_count || 0),
+        class_a_ops: Number(u.class_a_ops || 0),
+        reserved_class_a_ops: Number(aRows[0]?.reserved_a || 0),
+        class_b_ops: Number(u.class_b_ops || 0),
+        reserved_class_b_ops: Number(aRows[0]?.reserved_b || 0),
+        reconciled_storage_bytes: u.reconciled_storage_bytes != null ? Number(u.reconciled_storage_bytes) : null,
+        reconciled_class_a_ops: u.reconciled_class_a_ops != null ? Number(u.reconciled_class_a_ops) : null,
+        reconciled_class_b_ops: u.reconciled_class_b_ops != null ? Number(u.reconciled_class_b_ops) : null,
+        reconciliation_status: u.reconciliation_status,
+        last_reconciled_at: u.last_reconciled_at,
+        quota_halted: Boolean(u.quota_halted),
+      };
+    },
+  };
+
+  const objectStorageUsage = {
+    async reserve({
+      provider = 'oci',
+      month,
+      operation,
+      bytes = 0,
+      requests = 1,
+      outbound_bytes = 0,
+      idempotency_key = null,
+      ttl_seconds = 180,
+      limits = {},
+    }) {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `insert into object_storage_monthly_usage (provider, month) values ($1, $2) on conflict (provider, month) do nothing`,
+          [provider, month],
+        );
+        const { rows: uRows } = await client.query(
+          'select * from object_storage_monthly_usage where provider = $1 and month = $2 for update',
+          [provider, month],
+        );
+        const usage = uRows[0];
+
+        if (idempotency_key) {
+          const { rows: dupRows } = await client.query(
+            'select * from object_storage_quota_reservations where idempotency_key = $1',
+            [idempotency_key],
+          );
+          if (dupRows[0]) {
+            await client.query('commit');
+            return { ok: true, duplicate: true, reservation: dupRows[0], usage };
+          }
+        }
+
+        await client.query(
+          `update object_storage_quota_reservations
+              set state = 'expired', updated_at = now()
+            where provider = $1 and month = $2 and state = 'reserved' and expires_at <= now()`,
+          [provider, month],
+        );
+
+        const { rows: aRows } = await client.query(
+          `select coalesce(sum(reserved_bytes), 0)::bigint as reserved_bytes,
+                  coalesce(sum(reserved_requests), 0)::bigint as reserved_requests,
+                  coalesce(sum(reserved_outbound_bytes), 0)::bigint as reserved_outbound_bytes
+             from object_storage_quota_reservations
+            where provider = $1 and month = $2 and state = 'reserved'`,
+          [provider, month],
+        );
+        const activeBytes = Number(aRows[0]?.reserved_bytes || 0);
+        const activeReqs = Number(aRows[0]?.reserved_requests || 0);
+        const activeOut = Number(aRows[0]?.reserved_outbound_bytes || 0);
+
+        const addBytes = Math.max(0, Math.trunc(Number(bytes) || 0));
+        const addReqs = Math.max(0, Math.trunc(Number(requests) || 0));
+        const addOut = Math.max(0, Math.trunc(Number(outbound_bytes) || 0));
+
+        const maxBytes = Number(limits.maxManagedBytes || 16 * 1024 * 1024 * 1024);
+        const maxReqs = Number(limits.maxApiRequests || 40_000);
+        const maxOut = Number(limits.maxOutboundBytes || 8 * 1024 * 1024 * 1024 * 1024);
+
+        if (addBytes > 0 && Number(usage.managed_bytes) + activeBytes + addBytes > maxBytes) {
+          await client.query('rollback');
+          return { ok: false, code: 'OBJECT_STORAGE_CAPACITY_LIMIT', usage };
+        }
+        if (addReqs > 0 && Number(usage.api_requests) + activeReqs + addReqs > maxReqs) {
+          await client.query('rollback');
+          return { ok: false, code: 'OBJECT_STORAGE_REQUEST_LIMIT', usage };
+        }
+        if (addOut > 0 && Number(usage.outbound_bytes) + activeOut + addOut > maxOut) {
+          await client.query('rollback');
+          return { ok: false, code: 'OBJECT_STORAGE_OUTBOUND_LIMIT', usage };
+        }
+
+        const expiresAt = new Date(Date.now() + Math.max(1, Number(ttl_seconds) || 180) * 1000);
+        const { rows: resvRows } = await client.query(
+          `insert into object_storage_quota_reservations
+             (id, idempotency_key, provider, month, operation, reserved_bytes, reserved_requests, reserved_outbound_bytes, state, expires_at)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, 'reserved', $9)
+           returning *`,
+          [randomUUID(), idempotency_key, provider, month, operation, addBytes, addReqs, addOut, expiresAt],
+        );
+        await client.query('commit');
+        return { ok: true, duplicate: false, reservation: resvRows[0], usage };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async commit(id, { actual_bytes = null, actual_outbound_bytes = null, object_delta = null } = {}) {
+      if (!isUuid(id)) return null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select * from object_storage_quota_reservations where id = $1 for update', [id]);
+        const r = rows[0];
+        if (!r || r.state !== 'reserved') {
+          await client.query('commit');
+          return r || null;
+        }
+        const addBytes = actual_bytes != null ? Math.trunc(Number(actual_bytes) || 0) : Number(r.reserved_bytes || 0);
+        const addOut = actual_outbound_bytes != null ? Math.max(0, Math.trunc(Number(actual_outbound_bytes) || 0)) : Number(r.reserved_outbound_bytes || 0);
+        const objDelta = object_delta != null ? Math.trunc(Number(object_delta) || 0) : (addBytes > 0 ? 1 : 0);
+        const addReqs = Number(r.reserved_requests || 0);
+
+        await client.query(
+          `update object_storage_monthly_usage
+              set managed_bytes = greatest(0, managed_bytes + $3),
+                  object_count = greatest(0, object_count + $4),
+                  api_requests = api_requests + $5,
+                  outbound_bytes = outbound_bytes + $6,
+                  updated_at = now()
+            where provider = $1 and month = $2`,
+          [r.provider, r.month, addBytes, objDelta, addReqs, addOut],
+        );
+        const { rows: updated } = await client.query(
+          `update object_storage_quota_reservations set state = 'committed', updated_at = now() where id = $1 returning *`,
+          [id],
+        );
+        await client.query('commit');
+        return updated[0];
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async release(id, { billable_request_sent = false } = {}) {
+      if (!isUuid(id)) return null;
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query('select * from object_storage_quota_reservations where id = $1 for update', [id]);
+        const r = rows[0];
+        if (!r || r.state !== 'reserved') {
+          await client.query('commit');
+          return r || null;
+        }
+        if (billable_request_sent) {
+          await client.query(
+            `update object_storage_monthly_usage
+                set api_requests = api_requests + $3,
+                    updated_at = now()
+              where provider = $1 and month = $2`,
+            [r.provider, r.month, Number(r.reserved_requests || 1)],
+          );
+        }
+        const { rows: updated } = await client.query(
+          `update object_storage_quota_reservations set state = 'released', updated_at = now() where id = $1 returning *`,
+          [id],
+        );
+        await client.query('commit');
+        return updated[0];
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async recordDelete({ provider = 'oci', month, bytes = 0 }) {
+      const dropBytes = Math.max(0, Math.trunc(Number(bytes) || 0));
+      await pool.query(
+        `insert into object_storage_monthly_usage (provider, month) values ($1, $2) on conflict (provider, month) do nothing`,
+        [provider, month],
+      );
+      await pool.query(
+        `update object_storage_monthly_usage
+            set managed_bytes = greatest(0, managed_bytes - $3),
+                object_count = greatest(0, object_count - 1),
+                updated_at = now()
+          where provider = $1 and month = $2`,
+        [provider, month, dropBytes],
+      );
+    },
+
+    async getSnapshot({ provider = 'oci', month }) {
+      await pool.query(
+        `insert into object_storage_monthly_usage (provider, month) values ($1, $2) on conflict (provider, month) do nothing`,
+        [provider, month],
+      );
+      await pool.query(
+        `update object_storage_quota_reservations set state = 'expired', updated_at = now()
+          where provider = $1 and month = $2 and state = 'reserved' and expires_at <= now()`,
+        [provider, month],
+      );
+      const { rows: uRows } = await pool.query(
+        'select * from object_storage_monthly_usage where provider = $1 and month = $2',
+        [provider, month],
+      );
+      const { rows: aRows } = await pool.query(
+        `select coalesce(sum(reserved_bytes), 0)::bigint as reserved_bytes,
+                coalesce(sum(reserved_requests), 0)::bigint as reserved_requests,
+                coalesce(sum(reserved_outbound_bytes), 0)::bigint as reserved_outbound_bytes
+           from object_storage_quota_reservations
+          where provider = $1 and month = $2 and state = 'reserved'`,
+        [provider, month],
+      );
+      const u = uRows[0];
+      return {
+        provider: u.provider,
+        month: u.month,
+        managed_bytes: Number(u.managed_bytes || 0),
+        reserved_bytes: Number(aRows[0]?.reserved_bytes || 0),
+        object_count: Number(u.object_count || 0),
+        api_requests: Number(u.api_requests || 0),
+        reserved_requests: Number(aRows[0]?.reserved_requests || 0),
+        outbound_bytes: Number(u.outbound_bytes || 0),
+        reserved_outbound_bytes: Number(aRows[0]?.reserved_outbound_bytes || 0),
+      };
     },
   };
 
@@ -1055,6 +1520,8 @@ export async function createPostgresRepositories(connectionString) {
     payments,
     downloadTransactions,
     documentFiles,
+    r2Usage,
+    objectStorageUsage,
     driver: 'postgresql',
     schemaVersion,
     healthCheck,

@@ -19,6 +19,8 @@ const active = {
   payments: memory.payments,
   downloadTransactions: memory.downloadTransactions,
   documentFiles: memory.documentFiles,
+  r2Usage: memory.r2Usage,
+  objectStorageUsage: memory.objectStorageUsage,
 };
 
 let activeClose = memory.close;
@@ -37,6 +39,8 @@ export const issues = delegate('issues');
 export const payments = delegate('payments');
 export const downloadTransactions = delegate('downloadTransactions');
 export const documentFiles = delegate('documentFiles');
+export const r2Usage = delegate('r2Usage');
+export const objectStorageUsage = delegate('objectStorageUsage');
 
 export const storage = {
   driver: memory.driver,

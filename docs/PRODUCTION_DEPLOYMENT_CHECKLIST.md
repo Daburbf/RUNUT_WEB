@@ -14,12 +14,17 @@
 - [ ] Pre-deployment PostgreSQL backup snapshot taken.
 
 ## 2. Hosting & Domain Configuration (Strictly Zero-Cost Architecture)
-- [ ] **Frontend + Same-Origin Proxy**: Deploy Vue/Vite `dist/` + `functions/api/[[path]].js` on **Cloudflare Pages Free** (`https://<project>.pages.dev`). Leave `VITE_API_BASE_URL` empty so browser requests stay same-origin (`/api/*`) and set server-side `BACKEND_ORIGIN=https://<render-backend-domain>`.
-- [ ] **Backend API + LibreOffice**: Deploy `Dockerfile` via **Render Free Web Service** (`render.yaml`) with `COOKIE_SAME_SITE=lax`, `COOKIE_SECURE=true`, `FRONTEND_URL=https://<project>.pages.dev`, `CORS_ORIGINS=https://<project>.pages.dev`.
-- [ ] **Database**: Provision a **non-expiring** managed PostgreSQL database on **Neon Free** (`DATABASE_URL` with TLS, `DATABASE_SSL=true`, `PG_CONNECTION_TIMEOUT_MS=10000`). Do NOT use expiring 30-day Render Free PostgreSQL.
-- [ ] **Persistent Document Storage**: Provision private **Cloudflare R2 Free** bucket (`FILE_STORAGE_PROVIDER=r2`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`). Never rely on Render ephemeral local disk for permanent user documents.
+- [ ] **Eligibility Gate (if using Vercel Hobby)**: Confirm deployment is strictly **personal/non-commercial** with `MIDTRANS_IS_PRODUCTION=false`. If selling tokens commercially, use **Cloudflare Pages Free** (`functions/api/[[path]].js`) instead of Vercel Hobby.
+- [ ] **Frontend + Same-Origin API Proxy**:
+  - **Option A — Vercel Hobby (Non-Commercial)**: Deploy Vite `dist/` via `vercel.json`, leave `VITE_API_BASE_URL` empty, and prepend `{ "source": "/api/:path*", "destination": "https://<ACTUAL-RENDER-HOST>.onrender.com/api/:path*" }` in `vercel.json` **only after** Render assigns the real hostname (never deploy a placeholder URL).
+  - **Option B — Cloudflare Pages Free (Commercial-Permitted)**: Deploy Vite `dist/` + `functions/api/[[path]].js` on `https://<project>.pages.dev`, leave `VITE_API_BASE_URL` empty, and set server-side `BACKEND_ORIGIN=https://<ACTUAL-RENDER-HOST>.onrender.com`.
+- [ ] **Backend API + LibreOffice**: Deploy `Dockerfile` via **Render Free Web Service** (`render.yaml`) with `COOKIE_SAME_SITE=lax`, `COOKIE_SECURE=true`, `FRONTEND_URL=https://<actual-frontend-domain>`, `CORS_ORIGINS=https://<actual-frontend-domain>`.
+- [ ] **Database**: Provision a **non-expiring** managed PostgreSQL database on **Neon Free** (1 GB storage/project, 100 CU-hours/project/mo, 5 GB public network transfer/project/mo, up to 20 GB combined; `DATABASE_URL` with TLS, `DATABASE_SSL=true`, `PG_CONNECTION_TIMEOUT_MS=10000`, Migration v8). Do NOT use expiring 30-day Render Free PostgreSQL.
+- [ ] **Persistent Document Storage (Primary: OCI Object Storage Always Free; Optional: Cloudflare R2)**:
+  - Primary (`OBJECT_STORAGE_PROVIDER=oci`, `STRICT_STORAGE_QUOTA_MODE=true`): Create private Standard-tier OCI bucket + Customer Secret Key (`OCI_OS_NAMESPACE`, `OCI_OS_REGION`, `OCI_OS_BUCKET`, `OCI_OS_ACCESS_KEY_ID`, `OCI_OS_SECRET_ACCESS_KEY`). Application-side safety limits: **8 GB default** (safe during 10 GB Standard Free Trial; raisable up to **16 GB max** only after explicit `OCI_OS_ALWAYS_FREE_VERIFIED=true` + explicit `OCI_MAX_MANAGED_BYTES` on an Always Free-only account) / **40,000 API reqs/mo** / **8 TB outbound/mo** (zero auto-failover to R2).
+  - Optional (`OBJECT_STORAGE_PROVIDER=r2`): Private R2 bucket + billing alerts (application-side safety limits: 8 GB / 800k Class A / 8M Class B). Never rely on ephemeral local disk for permanent user documents.
 - [ ] **Midtrans Mode**: Keep `MIDTRANS_IS_PRODUCTION=false` (sandbox) until live production credentials and authorization are explicitly approved.
-- [ ] **HTTPS**: Automatic TLS 1.2+ on both Cloudflare Pages and Render.
+- [ ] **HTTPS**: Automatic TLS 1.2+ on frontend and Render backend.
 
 ## 3. Required Production Environment Variables
 - [ ] `NODE_ENV=production`

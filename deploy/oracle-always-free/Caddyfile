@@ -1,0 +1,9 @@
+{$BACKEND_DOMAIN} {
+  encode zstd gzip
+  reverse_proxy runut-api:8080 {
+    transport http {
+      read_timeout 120s
+      write_timeout 120s
+    }
+  }
+}

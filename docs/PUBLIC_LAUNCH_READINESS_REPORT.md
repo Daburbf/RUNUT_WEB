@@ -5,12 +5,12 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | Core Application & Full-Stack Build | **Ready** | Frontend (`vite build`, 2.17 s) & Backend Express API verified |
-| Automated Backend Test Suite (Local Windows) | **184 Passed / 0 Failed / 3 Conditionally Skipped** | 187 total tests (includes Cloudflare Pages same-origin proxy, persistent `__Secure-runut_refresh` cookies, Cloudflare R2 storage, security regressions, and restart durability); strict CI mode verified (`RUNUT_REQUIRE_INTEGRATION_TESTS=true`) |
-| Persistent File Storage (Restart Survival) | **Implemented** | Cloudflare R2 private objects (`server/src/services/r2Storage.js`) + Neon PostgreSQL metadata (`document_files` Migration v6, `user_id` isolation, fail-closed on outage) |
+| Automated Backend Test Suite (Local Windows) | **194 Passed / 0 Failed / 4 Conditionally Skipped** | 198 total tests (includes OCI Object Storage S3 adapter & Migration v8 persistent quotas, Cloudflare Pages proxy, persistent `__Secure-runut_refresh` cookies, R2 adapter & Migration v7 quotas, security regressions, and restart durability); strict CI mode verified (`RUNUT_REQUIRE_INTEGRATION_TESTS=true`) |
+| Persistent File Storage (Restart Survival) | **Implemented** | Primary: **Oracle Object Storage Always Free** (`server/src/services/ociObjectStorage.js`, Migration v8, **8 GB default** Free Trial safe / up to **16 GB max** only after explicit `OCI_OS_ALWAYS_FREE_VERIFIED=true` + explicit `OCI_MAX_MANAGED_BYTES`, 40k req/mo, 8 TB outbound/mo, zero auto-failover); Optional: **Cloudflare R2** (`r2Storage.js`, Migration v7) |
 | Native Windows Support (No Docker) | **Implemented & Verified** | `soffice.com` preferred, isolated profiles, safe `spawn(..., { shell: false })`, temp cleanup |
 | Provisioned CI Integration Jobs | **Configured** | `.github/workflows/ci.yml` provisions live `postgres:16-alpine` and Ubuntu `libreoffice-writer` in strict mode |
 | Dependency & Secret Security Audits | **Passed** | 0 high/critical vulnerabilities (frontend + backend), 0 tracked `.env` files |
-| Live Public URL Verification | **Pending Hosting Deployment** | Deployment credentials/hosting access not provided in this session; no public URL is claimed live yet |
+| Live Public URL Verification | **Not Yet Deployed / Not Remotely Verified** | Vercel Hobby (non-commercial only, external rewrite pending real Render host) + Render Free + Neon Free + Cloudflare R2 Free require dashboard provisioning; no public URL is claimed live yet |
 
 ---
 
@@ -70,7 +70,7 @@ All existing RUNUT features were audited and verified to work together as one in
 | Component | Recommended Zero-Cost Option | Verified Capabilities & Real Limits |
 | --- | --- | --- |
 | **App (Frontend + Backend + LibreOffice)** | **Render Free Web Service** (Docker runtime via `render.yaml`) | Free HTTPS, custom domain, runs `Dockerfile` with LibreOffice + fonts. **Limits**: 512 MB RAM, shared CPU, spins down after 15 min idle (~30–60 s cold start), ephemeral local disk (mitigated by PostgreSQL `document_files` storage). |
-| **Database + Persistent Document Store** | **Neon Free** or **Supabase Free** (or Render Free Postgres — note Render Free DB expires after 30 days) | Neon Free / Supabase Free provide persistent managed PostgreSQL with TLS/SSL and ~500 MB storage without 30-day deletion. Suitable for initial public launch with 30-day document retention cleanup. |
+| **Database + Persistent Document Store** | **Neon Free** + **Cloudflare R2 Free** | Neon Free (Nov 2026): **1 GB storage per project**, **100 CU-hours/project/month**, up to **20 GB combined Free storage**, non-expiring TLS. Cloudflare R2 Free: 10 GB-mo Standard storage, 1M Class A, 10M Class B, guarded by persistent PostgreSQL Migration v7 **application-side safety limits** (8 GB / 800k A / 8M B) + GraphQL analytics reconciliation. |
 | **AI Providers** | **OpenRouter (`:free`) + Google Gemini Free Tier + Groq Free Tier** | Enforced by `STRICT_FREE_AI_ONLY=true`. Subject to upstream free-tier RPM/RPD rate limits; no automatic paid billing. |
 | **Transactional Email (OTP / Reset)** | **Gmail SMTP (App Password)** or **Brevo Free Tier** | Free daily email quota; fails explicitly with `503 MAIL_NOT_CONFIGURED` if omitted. |
 | **Payments (Optional)** | **Midtrans Sandbox / Production QRIS** | No monthly software license fee; Midtrans charges standard per-transaction QRIS MDR fees (0.7%–0.7%+PPN per Bank Indonesia / Midtrans schedule) when live payments are enabled. |

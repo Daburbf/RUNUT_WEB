@@ -27,6 +27,15 @@ test('Vercel config: valid Vite SPA rewrites exclude /api/* and /assets/* and in
   assert.ok(headerNames.has('x-frame-options'));
   assert.ok(headerNames.has('referrer-policy'));
   assert.ok(headerNames.has('permissions-policy'));
+
+  const apiHeaders = cfg.headers.find((h) => h.source === '/api/(.*)')?.headers || [];
+  assert.ok(
+    apiHeaders.some((h) => h.key.toLowerCase() === 'cache-control' && /no-store/i.test(h.value)),
+    'API responses must have Cache-Control: no-store on Vercel',
+  );
+
+  const rawJson = readFileSync(path.join(ROOT, 'vercel.json'), 'utf8');
+  assert.doesNotMatch(rawJson, /ACTUAL-RENDER-HOST|YOUR-BACKEND-DOMAIN/i, 'Never commit a placeholder Render backend URL in vercel.json');
 });
 
 test('Split-origin Vercel + Backend cookies: COOKIE_SAME_SITE=none enforces SameSite=None and Secure=true', () => {

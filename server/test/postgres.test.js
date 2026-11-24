@@ -12,6 +12,7 @@ import {
   issues,
   downloadTransactions,
   documentFiles,
+  r2Usage,
   storage,
 } from '../src/repositories/index.js';
 import { MIGRATIONS } from '../src/repositories/migrations.js';
@@ -104,7 +105,7 @@ test('adapter PostgreSQL: migrasi otomatis v5, token_version, ledger atomik, tra
     const health = await healthCheck();
     assert.equal(health.ok, true);
     assert.equal(health.driver, 'postgresql');
-    assert.ok(health.schema_version >= 5, `schema_version harus >= 5, didapat ${health.schema_version}`);
+    assert.ok(health.schema_version >= 7, `schema_version harus >= 7, didapat ${health.schema_version}`);
 
     const email = `pg${Date.now()}${Math.random().toString(16).slice(2, 8)}@runut.test`;
     const otherEmail = `pgother${Date.now()}${Math.random().toString(16).slice(2, 8)}@runut.test`;
@@ -244,6 +245,20 @@ test('adapter PostgreSQL: migrasi otomatis v5, token_version, ledger atomik, tra
     const ownerDelete = await documents.deleteMany(created.id, [pgDoc.id]);
     assert.equal(ownerDelete.length, 1);
     assert.equal(await documentFiles.findByDocumentId(pgDoc.id), null, 'penghapusan dokumen harus cascade ke document_files');
+
+    // Migration v7: R2 persistent usage accounting & concurrent row-locked reservations on live PostgreSQL
+    const testMonth = `2099-${String(Math.floor(Math.random() * 12) + 1).padStart(2, '0')}`;
+    const r2Limits = { maxManagedBytes: 2000, maxClassAOps: 10, maxClassBOps: 10 };
+    const [pgR1, pgR2] = await Promise.all([
+      r2Usage.reserve({ month: testMonth, operation: 'PutObject', op_class: 'class_a', bytes: 1500, limits: r2Limits }),
+      r2Usage.reserve({ month: testMonth, operation: 'PutObject', op_class: 'class_a', bytes: 1500, limits: r2Limits }),
+    ]);
+    assert.equal([pgR1.ok, pgR2.ok].filter(Boolean).length, 1, 'hanya satu reservasi 1500 byte dari batas 2000 yang boleh berhasil secara konkuren di PostgreSQL');
+    const winner = pgR1.ok ? pgR1 : pgR2;
+    await r2Usage.commit(winner.reservation.id, { actual_bytes: 1500 });
+    const r2Snap = await r2Usage.getSnapshot(testMonth);
+    assert.equal(r2Snap.managed_bytes, 1500);
+    assert.equal(r2Snap.class_a_ops, 1);
 
     const token = `hash-${Date.now()}`;
     const session = await refreshTokens.create({ user_id: created.id, token_hash: token, expires_at: new Date(Date.now() + 3600e3), user_agent: 'uji' });

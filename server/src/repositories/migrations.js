@@ -333,6 +333,103 @@ export const MIGRATIONS = [
       alter table document_files add column if not exists storage_key text;
     `,
   },
+  {
+    version: 7,
+    name: 'r2_persistent_usage_quota_accounting',
+    sql: `
+      create table if not exists r2_monthly_usage (
+        month text primary key,
+        managed_bytes bigint not null default 0 check (managed_bytes >= 0),
+        object_count integer not null default 0 check (object_count >= 0),
+        class_a_ops bigint not null default 0 check (class_a_ops >= 0),
+        class_b_ops bigint not null default 0 check (class_b_ops >= 0),
+        reconciled_storage_bytes bigint,
+        reconciled_class_a_ops bigint,
+        reconciled_class_b_ops bigint,
+        reconciliation_status text not null default 'unreconciled',
+        last_reconciled_at timestamptz,
+        quota_halted boolean not null default false,
+        updated_at timestamptz not null default now()
+      );
+
+      create table if not exists r2_quota_reservations (
+        id uuid primary key,
+        idempotency_key text,
+        month text not null references r2_monthly_usage(month) on delete cascade,
+        operation text not null,
+        op_class text not null check (op_class in ('class_a', 'class_b', 'free')),
+        reserved_bytes bigint not null default 0 check (reserved_bytes >= 0),
+        state text not null default 'reserved' check (state in ('reserved', 'committed', 'released', 'expired')),
+        expires_at timestamptz not null,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      );
+      create unique index if not exists r2_quota_reservations_idem_key
+        on r2_quota_reservations (idempotency_key)
+        where idempotency_key is not null;
+      create index if not exists r2_quota_reservations_active_idx
+        on r2_quota_reservations (month, state, expires_at)
+        where state = 'reserved';
+
+      drop trigger if exists trg_r2_monthly_usage_updated_at on r2_monthly_usage;
+      create trigger trg_r2_monthly_usage_updated_at before update on r2_monthly_usage
+        for each row execute function set_updated_at();
+
+      drop trigger if exists trg_r2_quota_reservations_updated_at on r2_quota_reservations;
+      create trigger trg_r2_quota_reservations_updated_at before update on r2_quota_reservations
+        for each row execute function set_updated_at();
+    `,
+  },
+  {
+    version: 8,
+    name: 'oci_object_storage_provider_and_persistent_quota',
+    sql: `
+      alter table document_files drop constraint if exists document_files_storage_provider_check;
+      alter table document_files add constraint document_files_storage_provider_check
+        check (storage_provider in ('postgres', 'r2', 'oci'));
+
+      create table if not exists object_storage_monthly_usage (
+        provider text not null check (provider in ('oci', 'r2')),
+        month text not null,
+        managed_bytes bigint not null default 0 check (managed_bytes >= 0),
+        object_count integer not null default 0 check (object_count >= 0),
+        api_requests bigint not null default 0 check (api_requests >= 0),
+        outbound_bytes bigint not null default 0 check (outbound_bytes >= 0),
+        updated_at timestamptz not null default now(),
+        primary key (provider, month)
+      );
+
+      create table if not exists object_storage_quota_reservations (
+        id uuid primary key,
+        idempotency_key text,
+        provider text not null,
+        month text not null,
+        operation text not null,
+        reserved_bytes bigint not null default 0 check (reserved_bytes >= 0),
+        reserved_requests integer not null default 1 check (reserved_requests >= 0),
+        reserved_outbound_bytes bigint not null default 0 check (reserved_outbound_bytes >= 0),
+        state text not null default 'reserved' check (state in ('reserved', 'committed', 'released', 'expired')),
+        expires_at timestamptz not null,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        foreign key (provider, month) references object_storage_monthly_usage(provider, month) on delete cascade
+      );
+      create unique index if not exists obj_storage_resv_idem_key
+        on object_storage_quota_reservations (idempotency_key)
+        where idempotency_key is not null;
+      create index if not exists obj_storage_resv_active_idx
+        on object_storage_quota_reservations (provider, month, state, expires_at)
+        where state = 'reserved';
+
+      drop trigger if exists trg_obj_storage_usage_updated_at on object_storage_monthly_usage;
+      create trigger trg_obj_storage_usage_updated_at before update on object_storage_monthly_usage
+        for each row execute function set_updated_at();
+
+      drop trigger if exists trg_obj_storage_resv_updated_at on object_storage_quota_reservations;
+      create trigger trg_obj_storage_resv_updated_at before update on object_storage_quota_reservations
+        for each row execute function set_updated_at();
+    `,
+  },
 ];
 
 export async function runMigrations(pool) {

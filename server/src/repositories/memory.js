@@ -15,6 +15,10 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
     payments: [],
     token_transactions: [],
     download_transactions: [],
+    r2_monthly_usage: [],
+    r2_quota_reservations: [],
+    object_storage_monthly_usage: [],
+    object_storage_quota_reservations: [],
   };
 
   const loadFromDisk = () => {
@@ -747,8 +751,8 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
   const fileBlobs = new Map();
   const documentFiles = {
     async save({ document_id, user_id, ext, original_name, size_bytes, sha256, content = null, storage_provider = 'postgres', storage_key = null }) {
-      const isR2 = storage_provider === 'r2';
-      if (!document_id || (!isR2 && (!Buffer.isBuffer(content) || content.length === 0))) return null;
+      const isExternal = storage_provider === 'r2' || storage_provider === 'oci';
+      if (!document_id || (!isExternal && (!Buffer.isBuffer(content) || content.length === 0))) return null;
       if (!fileBlobs.has(document_id)) {
         fileBlobs.set(document_id, {
           document_id,
@@ -759,7 +763,7 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
           sha256,
           storage_provider,
           storage_key,
-          buffer: isR2 ? null : Buffer.from(content),
+          buffer: isExternal ? null : Buffer.from(content),
           created_at: now(),
         });
       }
@@ -776,6 +780,308 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
     },
   };
 
+  const r2Usage = {
+    _ensureMonth(month) {
+      let row = tables.r2_monthly_usage.find((r) => r.month === month);
+      if (!row) {
+        row = {
+          month,
+          managed_bytes: 0,
+          object_count: 0,
+          class_a_ops: 0,
+          class_b_ops: 0,
+          reconciled_storage_bytes: null,
+          reconciled_class_a_ops: null,
+          reconciled_class_b_ops: null,
+          reconciliation_status: 'unreconciled',
+          last_reconciled_at: null,
+          quota_halted: false,
+          updated_at: now(),
+        };
+        tables.r2_monthly_usage.push(row);
+      }
+      return row;
+    },
+    _expireOld(month) {
+      const nowMs = Date.now();
+      let changed = false;
+      for (const r of tables.r2_quota_reservations) {
+        if (r.month === month && r.state === 'reserved' && new Date(r.expires_at).getTime() <= nowMs) {
+          r.state = 'expired';
+          r.updated_at = now();
+          changed = true;
+        }
+      }
+      if (changed) saveToDisk();
+    },
+    async reserve({ month, operation, op_class, bytes = 0, idempotency_key = null, ttl_seconds = 180, limits = {} }) {
+      // Reload from disk if shared persistPath is used across two independent instances
+      if (persistPath) loadFromDisk();
+      const usage = this._ensureMonth(month);
+      if (idempotency_key) {
+        const dup = tables.r2_quota_reservations.find((r) => r.idempotency_key === idempotency_key);
+        if (dup) return { ok: true, duplicate: true, reservation: clone(dup), usage: clone(usage) };
+      }
+      this._expireOld(month);
+      if (usage.quota_halted && op_class !== 'free') {
+        return { ok: false, code: 'R2_QUOTA_HALTED_BY_RECONCILIATION', usage: clone(usage) };
+      }
+      const active = tables.r2_quota_reservations.filter((r) => r.month === month && r.state === 'reserved');
+      const activeBytes = active.reduce((s, r) => s + Number(r.reserved_bytes || 0), 0);
+      const activeA = active.filter((r) => r.op_class === 'class_a').length;
+      const activeB = active.filter((r) => r.op_class === 'class_b').length;
+
+      const addBytes = Math.max(0, Math.trunc(Number(bytes) || 0));
+      const maxBytes = Number(limits.maxManagedBytes || 8 * 1024 * 1024 * 1024);
+      const maxA = Number(limits.maxClassAOps || 800_000);
+      const maxB = Number(limits.maxClassBOps || 8_000_000);
+
+      if (addBytes > 0 && Number(usage.managed_bytes) + activeBytes + addBytes > maxBytes) {
+        return { ok: false, code: 'R2_STORAGE_QUOTA_LIMIT', usage: clone(usage) };
+      }
+      if (op_class === 'class_a' && Number(usage.class_a_ops) + activeA + 1 > maxA) {
+        return { ok: false, code: 'R2_CLASS_A_QUOTA_LIMIT', usage: clone(usage) };
+      }
+      if (op_class === 'class_b' && Number(usage.class_b_ops) + activeB + 1 > maxB) {
+        return { ok: false, code: 'R2_CLASS_B_QUOTA_LIMIT', usage: clone(usage) };
+      }
+
+      const resv = insert('r2_quota_reservations', {
+        idempotency_key,
+        month,
+        operation,
+        op_class,
+        reserved_bytes: addBytes,
+        state: 'reserved',
+        expires_at: new Date(Date.now() + Math.max(1, Number(ttl_seconds) || 180) * 1000).toISOString(),
+        updated_at: now(),
+      });
+      return { ok: true, duplicate: false, reservation: resv, usage: clone(usage) };
+    },
+    async commit(id, { actual_bytes = null } = {}) {
+      if (persistPath) loadFromDisk();
+      const r = tables.r2_quota_reservations.find((x) => x.id === id);
+      if (!r || r.state !== 'reserved') return clone(r || null);
+      const usage = this._ensureMonth(r.month);
+      const addBytes = actual_bytes != null ? Math.max(0, Math.trunc(Number(actual_bytes) || 0)) : Number(r.reserved_bytes || 0);
+      usage.managed_bytes += addBytes;
+      if (addBytes > 0) usage.object_count += 1;
+      if (r.op_class === 'class_a') usage.class_a_ops += 1;
+      if (r.op_class === 'class_b') usage.class_b_ops += 1;
+      usage.updated_at = now();
+      r.state = 'committed';
+      r.updated_at = now();
+      saveToDisk();
+      return clone(r);
+    },
+    async release(id, { billable_request_sent = false } = {}) {
+      if (persistPath) loadFromDisk();
+      const r = tables.r2_quota_reservations.find((x) => x.id === id);
+      if (!r || r.state !== 'reserved') return clone(r || null);
+      if (billable_request_sent) {
+        const usage = this._ensureMonth(r.month);
+        if (r.op_class === 'class_a') usage.class_a_ops += 1;
+        if (r.op_class === 'class_b') usage.class_b_ops += 1;
+        usage.updated_at = now();
+      }
+      r.state = 'released';
+      r.updated_at = now();
+      saveToDisk();
+      return clone(r);
+    },
+    async recordDelete({ month, bytes = 0 }) {
+      if (persistPath) loadFromDisk();
+      const usage = this._ensureMonth(month);
+      usage.managed_bytes = Math.max(0, usage.managed_bytes - Math.max(0, Math.trunc(Number(bytes) || 0)));
+      usage.object_count = Math.max(0, usage.object_count - 1);
+      usage.updated_at = now();
+      saveToDisk();
+    },
+    async reconcile({ month, provider_storage_bytes = null, provider_class_a_ops = null, provider_class_b_ops = null, status = 'ok', halt = false }) {
+      if (persistPath) loadFromDisk();
+      const usage = this._ensureMonth(month);
+      if (provider_storage_bytes != null) usage.managed_bytes = Math.max(usage.managed_bytes, Number(provider_storage_bytes));
+      if (provider_class_a_ops != null) usage.class_a_ops = Math.max(usage.class_a_ops, Number(provider_class_a_ops));
+      if (provider_class_b_ops != null) usage.class_b_ops = Math.max(usage.class_b_ops, Number(provider_class_b_ops));
+      usage.reconciled_storage_bytes = provider_storage_bytes;
+      usage.reconciled_class_a_ops = provider_class_a_ops;
+      usage.reconciled_class_b_ops = provider_class_b_ops;
+      usage.reconciliation_status = status;
+      usage.last_reconciled_at = now();
+      usage.quota_halted = Boolean(halt);
+      usage.updated_at = now();
+      saveToDisk();
+      return clone(usage);
+    },
+    async getSnapshot(month) {
+      if (persistPath) loadFromDisk();
+      const u = this._ensureMonth(month);
+      this._expireOld(month);
+      const active = tables.r2_quota_reservations.filter((r) => r.month === month && r.state === 'reserved');
+      return {
+        month: u.month,
+        managed_bytes: Number(u.managed_bytes || 0),
+        reserved_bytes: active.reduce((s, r) => s + Number(r.reserved_bytes || 0), 0),
+        object_count: Number(u.object_count || 0),
+        class_a_ops: Number(u.class_a_ops || 0),
+        reserved_class_a_ops: active.filter((r) => r.op_class === 'class_a').length,
+        class_b_ops: Number(u.class_b_ops || 0),
+        reserved_class_b_ops: active.filter((r) => r.op_class === 'class_b').length,
+        reconciled_storage_bytes: u.reconciled_storage_bytes,
+        reconciled_class_a_ops: u.reconciled_class_a_ops,
+        reconciled_class_b_ops: u.reconciled_class_b_ops,
+        reconciliation_status: u.reconciliation_status,
+        last_reconciled_at: u.last_reconciled_at,
+        quota_halted: Boolean(u.quota_halted),
+      };
+    },
+  };
+
+  const objectStorageUsage = {
+    _ensure(provider, month) {
+      let row = tables.object_storage_monthly_usage.find((r) => r.provider === provider && r.month === month);
+      if (!row) {
+        row = {
+          provider,
+          month,
+          managed_bytes: 0,
+          object_count: 0,
+          api_requests: 0,
+          outbound_bytes: 0,
+          updated_at: now(),
+        };
+        tables.object_storage_monthly_usage.push(row);
+      }
+      return row;
+    },
+    _expireOld(provider, month) {
+      const nowMs = Date.now();
+      let changed = false;
+      for (const r of tables.object_storage_quota_reservations) {
+        if (r.provider === provider && r.month === month && r.state === 'reserved' && new Date(r.expires_at).getTime() <= nowMs) {
+          r.state = 'expired';
+          r.updated_at = now();
+          changed = true;
+        }
+      }
+      if (changed) saveToDisk();
+    },
+    async reserve({
+      provider = 'oci',
+      month,
+      operation,
+      bytes = 0,
+      requests = 1,
+      outbound_bytes = 0,
+      idempotency_key = null,
+      ttl_seconds = 180,
+      limits = {},
+    }) {
+      if (persistPath) loadFromDisk();
+      const usage = this._ensure(provider, month);
+      if (idempotency_key) {
+        const dup = tables.object_storage_quota_reservations.find((r) => r.idempotency_key === idempotency_key);
+        if (dup) return { ok: true, duplicate: true, reservation: clone(dup), usage: clone(usage) };
+      }
+      this._expireOld(provider, month);
+
+      const active = tables.object_storage_quota_reservations.filter((r) => r.provider === provider && r.month === month && r.state === 'reserved');
+      const activeBytes = active.reduce((s, r) => s + Number(r.reserved_bytes || 0), 0);
+      const activeReqs = active.reduce((s, r) => s + Number(r.reserved_requests || 0), 0);
+      const activeOut = active.reduce((s, r) => s + Number(r.reserved_outbound_bytes || 0), 0);
+
+      const addBytes = Math.max(0, Math.trunc(Number(bytes) || 0));
+      const addReqs = Math.max(0, Math.trunc(Number(requests) || 0));
+      const addOut = Math.max(0, Math.trunc(Number(outbound_bytes) || 0));
+
+      const maxBytes = Number(limits.maxManagedBytes || 16 * 1024 * 1024 * 1024);
+      const maxReqs = Number(limits.maxApiRequests || 40_000);
+      const maxOut = Number(limits.maxOutboundBytes || 8 * 1024 * 1024 * 1024 * 1024);
+
+      if (addBytes > 0 && Number(usage.managed_bytes) + activeBytes + addBytes > maxBytes) {
+        return { ok: false, code: 'OBJECT_STORAGE_CAPACITY_LIMIT', usage: clone(usage) };
+      }
+      if (addReqs > 0 && Number(usage.api_requests) + activeReqs + addReqs > maxReqs) {
+        return { ok: false, code: 'OBJECT_STORAGE_REQUEST_LIMIT', usage: clone(usage) };
+      }
+      if (addOut > 0 && Number(usage.outbound_bytes) + activeOut + addOut > maxOut) {
+        return { ok: false, code: 'OBJECT_STORAGE_OUTBOUND_LIMIT', usage: clone(usage) };
+      }
+
+      const resv = insert('object_storage_quota_reservations', {
+        idempotency_key,
+        provider,
+        month,
+        operation,
+        reserved_bytes: addBytes,
+        reserved_requests: addReqs,
+        reserved_outbound_bytes: addOut,
+        state: 'reserved',
+        expires_at: new Date(Date.now() + Math.max(1, Number(ttl_seconds) || 180) * 1000).toISOString(),
+        updated_at: now(),
+      });
+      return { ok: true, duplicate: false, reservation: resv, usage: clone(usage) };
+    },
+    async commit(id, { actual_bytes = null, actual_outbound_bytes = null, object_delta = null } = {}) {
+      if (persistPath) loadFromDisk();
+      const r = tables.object_storage_quota_reservations.find((x) => x.id === id);
+      if (!r || r.state !== 'reserved') return clone(r || null);
+      const usage = this._ensure(r.provider, r.month);
+      const addBytes = actual_bytes != null ? Math.trunc(Number(actual_bytes) || 0) : Number(r.reserved_bytes || 0);
+      const addOut = actual_outbound_bytes != null ? Math.max(0, Math.trunc(Number(actual_outbound_bytes) || 0)) : Number(r.reserved_outbound_bytes || 0);
+      const objDelta = object_delta != null ? Math.trunc(Number(object_delta) || 0) : (addBytes > 0 ? 1 : 0);
+
+      usage.managed_bytes = Math.max(0, usage.managed_bytes + addBytes);
+      usage.object_count = Math.max(0, usage.object_count + objDelta);
+      usage.api_requests += Number(r.reserved_requests || 0);
+      usage.outbound_bytes += addOut;
+      usage.updated_at = now();
+      r.state = 'committed';
+      r.updated_at = now();
+      saveToDisk();
+      return clone(r);
+    },
+    async release(id, { billable_request_sent = false } = {}) {
+      if (persistPath) loadFromDisk();
+      const r = tables.object_storage_quota_reservations.find((x) => x.id === id);
+      if (!r || r.state !== 'reserved') return clone(r || null);
+      if (billable_request_sent) {
+        const usage = this._ensure(r.provider, r.month);
+        usage.api_requests += Number(r.reserved_requests || 1);
+        usage.updated_at = now();
+      }
+      r.state = 'released';
+      r.updated_at = now();
+      saveToDisk();
+      return clone(r);
+    },
+    async recordDelete({ provider = 'oci', month, bytes = 0 }) {
+      if (persistPath) loadFromDisk();
+      const usage = this._ensure(provider, month);
+      usage.managed_bytes = Math.max(0, usage.managed_bytes - Math.max(0, Math.trunc(Number(bytes) || 0)));
+      usage.object_count = Math.max(0, usage.object_count - 1);
+      usage.updated_at = now();
+      saveToDisk();
+    },
+    async getSnapshot({ provider = 'oci', month }) {
+      if (persistPath) loadFromDisk();
+      const u = this._ensure(provider, month);
+      this._expireOld(provider, month);
+      const active = tables.object_storage_quota_reservations.filter((r) => r.provider === provider && r.month === month && r.state === 'reserved');
+      return {
+        provider: u.provider,
+        month: u.month,
+        managed_bytes: Number(u.managed_bytes || 0),
+        reserved_bytes: active.reduce((s, r) => s + Number(r.reserved_bytes || 0), 0),
+        object_count: Number(u.object_count || 0),
+        api_requests: Number(u.api_requests || 0),
+        reserved_requests: active.reduce((s, r) => s + Number(r.reserved_requests || 0), 0),
+        outbound_bytes: Number(u.outbound_bytes || 0),
+        reserved_outbound_bytes: active.reduce((s, r) => s + Number(r.reserved_outbound_bytes || 0), 0),
+      };
+    },
+  };
+
   const driver = persistPath ? 'file' : 'memori';
 
   return {
@@ -788,6 +1094,8 @@ export function createMemoryRepositories({ persistPath = null } = {}) {
     payments,
     downloadTransactions,
     documentFiles,
+    r2Usage,
+    objectStorageUsage,
     driver,
     persistPath,
     async healthCheck() {
