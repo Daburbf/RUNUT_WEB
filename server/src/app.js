@@ -25,7 +25,7 @@ import {
   commitDocumentDownload, cancelDocumentDownload, downloadAnalysisReport,
 } from './routes/documents.js';
 import {
-  listPayments, createPaymentHandler, getPayment, renewPayment, paymentQr,
+  listPayments, createPaymentHandler, getPayment, renewPayment, cancelPayment, paymentQr,
   paymentInvoice, paymentNotification,
 } from './routes/payments.js';
 import { paymentInfo } from './services/payments.js';
@@ -240,6 +240,7 @@ export function createApp() {
   app.post('/api/payments', requireAuth, paymentLimiter, createPaymentHandler);
   app.post('/api/payments/notify', webhookLimiter, paymentNotification);
   app.post('/api/payments/:orderId/renew', requireAuth, paymentLimiter, renewPayment);
+  app.post('/api/payments/:orderId/cancel', requireAuth, paymentLimiter, cancelPayment);
   app.get('/api/payments/:orderId/qr', requireAuth, paymentQr);
   app.get('/api/payments/:orderId/invoice', requireAuth, paymentInvoice);
   app.get('/api/payments/:orderId', requireAuth, getPayment);

@@ -24,6 +24,7 @@ const order = ref(null)
 const creating = ref(false)
 const checking = ref(false)
 const manualChecking = ref(false)
+const cancelling = ref(false)
 const renewing = ref(false)
 const renewFailed = ref(false)
 const qrUrl = ref('')
@@ -260,6 +261,32 @@ async function openOrder(row) {
   await loadQr()
   startPoll()
   if (row.status === 'pending') await check()
+}
+
+async function cancelOrder() {
+  if (!order.value || order.value.status !== 'pending' || cancelling.value) return
+  cancelling.value = true
+  error.value = ''
+  notice.value = ''
+  stopPoll()
+  stopCountdown()
+  try {
+    const { payment } = await api(`/api/payments/${order.value.order_id}/cancel`, { method: 'POST' })
+    apply(payment)
+    if (qrUrl.value) { URL.revokeObjectURL(qrUrl.value); qrUrl.value = '' }
+    const nextQuery = { ...route.query }
+    delete nextQuery.order
+    router.replace({ name: 'tokens', query: nextQuery })
+    notice.value = 'Pembelian berhasil dibatalkan. Anda dapat memilih paket atau metode pembayaran lain.'
+  } catch (e) {
+    error.value = e.message || 'Gagal membatalkan transaksi.'
+    if (order.value?.status === 'pending') {
+      startPoll()
+      if (order.value.channel === 'qris') startCountdown()
+    }
+  } finally {
+    cancelling.value = false
+  }
 }
 
 async function invoice(row) {
@@ -605,17 +632,34 @@ onBeforeUnmount(() => {
         <p class="mt-3 text-sm text-black/70">Pembayaran kartu diproses secara aman melalui halaman payment gateway.</p>
       </div>
 
-      <div class="mt-5 flex flex-wrap gap-2 border-t-2 border-black pt-4">
-        <BaseButton v-if="order.status === 'pending'" size="sm" :disabled="manualChecking" @click="check(false)">
+      <div class="mt-5 flex flex-col gap-2.5 border-t-2 border-black pt-4 sm:flex-row sm:flex-wrap sm:items-center">
+        <BaseButton
+          v-if="order.status === 'pending'"
+          size="sm"
+          class="w-full justify-center sm:w-auto"
+          :disabled="manualChecking || cancelling"
+          @click="check(false)"
+        >
           <i :class="['fa-solid', manualChecking ? 'fa-circle-notch fa-spin' : 'fa-rotate-right']"></i>Periksa Status
         </BaseButton>
-        <BaseButton v-if="order.status === 'paid'" variant="secondary" size="sm" @click="invoice(order)">
+        <BaseButton
+          v-if="order.status === 'pending'"
+          variant="secondary"
+          size="sm"
+          class="w-full justify-center border-[#FF3000] text-[#FF3000] hover:bg-[#FF3000] hover:text-white sm:w-auto"
+          :disabled="cancelling"
+          @click="cancelOrder"
+        >
+          <i :class="['fa-solid', cancelling ? 'fa-circle-notch fa-spin' : 'fa-xmark']"></i>
+          {{ cancelling ? 'Membatalkan...' : 'Batalkan Pembelian' }}
+        </BaseButton>
+        <BaseButton v-if="order.status === 'paid'" variant="secondary" size="sm" class="w-full justify-center sm:w-auto" @click="invoice(order)">
           <i class="fa-solid fa-file-invoice"></i>Unduh Invoice PDF
         </BaseButton>
-        <span v-if="order.status === 'pending'" class="self-center font-mono text-[10px] uppercase tracking-widest text-black/50">
-          Status diperiksa otomatis setiap 15 detik
+        <span v-if="order.status === 'pending'" class="font-mono text-[10px] uppercase tracking-widest text-black/50 sm:ml-auto">
+          Status diperiksa otomatis setiap 10 detik
         </span>
-        <BaseButton v-if="order.status === 'paid'" size="sm" variant="accent" to="/analisis">
+        <BaseButton v-if="order.status === 'paid'" size="sm" variant="accent" class="w-full justify-center sm:w-auto" to="/analisis">
           <i class="fa-solid fa-arrow-right"></i>{{ hasDraft ? 'Kembali ke Draf Analisis' : 'Mulai Analisis' }}
         </BaseButton>
       </div>

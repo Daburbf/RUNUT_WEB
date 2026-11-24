@@ -110,6 +110,19 @@ export const renewPayment = asyncHandler(async (req, res) => {
   });
 });
 
+// POST /api/payments/:orderId/cancel - batalkan transaksi yang masih menunggu pembayaran.
+export const cancelPayment = asyncHandler(async (req, res) => {
+  const row = await ownedPayment(req.user.id, req.params.orderId);
+  if (row.status === 'paid') {
+    throw new HttpError(409, 'Pembayaran sudah lunas dan tidak dapat dibatalkan.', { code: 'PAYMENT_ALREADY_PAID' });
+  }
+  if (row.status === 'cancelled' || row.status === 'expired') {
+    return res.json({ ok: true, cancelled: row.status === 'cancelled', payment: publicPayment(row) });
+  }
+  const updated = (await payments.updateByOrderId(row.order_id, { status: 'cancelled' })) || { ...row, status: 'cancelled' };
+  res.json({ ok: true, cancelled: true, payment: publicPayment(updated) });
+});
+
 // POST /api/payments/notify - webhook Midtrans.
 export const paymentNotification = asyncHandler(async (req, res) => {
   const row = await handleNotification(req.body);
