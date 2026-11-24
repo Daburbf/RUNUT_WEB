@@ -165,8 +165,16 @@ function startPoll() {
 
 async function refreshLedger() {
   try {
-    const data = await api('/api/tokens/transactions?limit=15')
-    ledger.value = data.transactions || []
+    const data = await api('/api/tokens/transactions?limit=30')
+    const rawTx = data.transactions || []
+    const refundedIds = new Set(
+      rawTx
+        .filter((t) => t.reference_type === 'analysis_refund' && t.reference_id)
+        .map((t) => t.reference_id),
+    )
+    ledger.value = rawTx
+      .filter((t) => t.reference_type !== 'analysis_refund' && !refundedIds.has(t.id))
+      .slice(0, 15)
     if (data.balance !== undefined) auth.setBalance(data.balance)
   } catch { /* abaikan */ }
 }
