@@ -1,0 +1,25 @@
+{
+  "name": "RUNUT Backend (Node.js 24 + LibreOffice + Neon PostgreSQL)",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-24-bookworm",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-core fonts-dejavu fonts-noto-core && npm ci && npm ci --prefix server",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "RUNUT Backend API",
+      "onAutoForward": "notify"
+    }
+  },
+  "containerEnv": {
+    "NODE_ENV": "production",
+    "HOST": "0.0.0.0",
+    "PORT": "8080",
+    "DATABASE_SSL": "true",
+    "OBJECT_STORAGE_PROVIDER": "postgres",
+    "STRICT_STORAGE_QUOTA_MODE": "true",
+    "MIDTRANS_IS_PRODUCTION": "false",
+    "STRICT_FREE_AI_ONLY": "true",
+    "COOKIE_SECURE": "true",
+    "COOKIE_SAME_SITE": "lax",
+    "DOCX_PDF_CONVERSION_ENABLED": "true"
+  }
+}

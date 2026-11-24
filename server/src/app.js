@@ -269,8 +269,9 @@ export async function start() {
   }
   const app = createApp();
   const retentionTimer = startRetentionJob();
-  const server = app.listen(config.port, () => {
-    console.log(`[runut] API listening on port ${config.port} (env=${config.env})`);
+  const host = process.env.HOST || '0.0.0.0';
+  const server = app.listen(config.port, host, () => {
+    console.log(`[runut] API listening on ${host}:${config.port} (env=${config.env})`);
   });
 
   const shutdown = (signal) => {
