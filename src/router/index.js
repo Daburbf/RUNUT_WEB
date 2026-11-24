@@ -47,4 +47,31 @@ router.beforeEach(async (to) => {
   if (to.meta.guest && auth.user) return { name: 'analyze' }
 })
 
+// Auto-recover cleanly when a new deployment invalidates a cached lazy-loaded chunk hash
+function recoverStaleChunk(targetPath) {
+  if (typeof window === 'undefined') return
+  const key = 'runut_chunk_reload_at'
+  const last = Number(sessionStorage.getItem(key) || 0)
+  if (Date.now() - last < 15000) return
+  sessionStorage.setItem(key, String(Date.now()))
+  if (targetPath && window.location.hash !== `#${targetPath}`) {
+    window.location.hash = `#${targetPath}`
+  }
+  window.location.reload()
+}
+
+router.onError((err, to) => {
+  const msg = String(err?.message || err || '')
+  if (/Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk|ChunkLoadError/i.test(msg)) {
+    recoverStaleChunk(to?.fullPath)
+  }
+})
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', (event) => {
+    event?.preventDefault?.()
+    recoverStaleChunk()
+  })
+}
+
 export default router
