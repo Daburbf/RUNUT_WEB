@@ -36,6 +36,16 @@ test('Vercel config: valid Vite SPA rewrites exclude /api/* and /assets/* and in
 
   const rawJson = readFileSync(path.join(ROOT, 'vercel.json'), 'utf8');
   assert.doesNotMatch(rawJson, /ACTUAL-RENDER-HOST|YOUR-BACKEND-DOMAIN/i, 'Never commit a placeholder Render backend URL in vercel.json');
+  assert.match(cfg.installCommand, /npm ci --prefix server/, 'Vercel installCommand must install backend dependencies too');
+  assert.ok(
+    cfg.rewrites.some((r) => r.source === '/api/(.*)' && r.destination === '/api/index.js'),
+    'Vercel must route /api/* to the Express serverless adapter api/index.js',
+  );
+  const apiEntry = readFileSync(path.join(ROOT, 'api/index.js'), 'utf8');
+  assert.match(apiEntry, /createApp/);
+  assert.match(apiEntry, /initStorage/);
+  assert.match(apiEntry, /MIDTRANS_IS_PRODUCTION = 'false'/);
+  assert.match(apiEntry, /STRICT_FREE_AI_ONLY = 'true'/);
 });
 
 test('Split-origin Vercel + Backend cookies: COOKIE_SAME_SITE=none enforces SameSite=None and Secure=true', () => {
