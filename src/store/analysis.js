@@ -7,6 +7,78 @@ import { documents } from './documents'
 import { auth } from './auth'
 
 const DRAFT_STORAGE_KEY = 'runut_editor_draft_v1'
+const IDB_NAME = 'runut_pending_files_v1'
+const IDB_STORE = 'files'
+const IDB_KEY = 'pending_upload'
+
+function openFileDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') return resolve(null)
+    const req = indexedDB.open(IDB_NAME, 1)
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+        req.result.createObjectStore(IDB_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+async function persistPendingFile(file) {
+  try {
+    const db = await openFileDb()
+    if (!db) return
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite')
+      const store = tx.objectStore(IDB_STORE)
+      if (file instanceof File || file instanceof Blob) {
+        store.put({
+          blob: file,
+          name: file.name || 'dokumen',
+          type: file.type || 'application/octet-stream',
+          lastModified: file.lastModified || Date.now(),
+        }, IDB_KEY)
+      } else {
+        store.delete(IDB_KEY)
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  } catch { /* abaikan jika IndexedDB tidak tersedia (mis. mode privat) */ }
+}
+
+export async function hydratePendingFile() {
+  if (job.pendingFile) return job.pendingFile
+  try {
+    const db = await openFileDb()
+    if (!db) return null
+    const record = await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readonly')
+      const req = tx.objectStore(IDB_STORE).get(IDB_KEY)
+      req.onsuccess = () => resolve(req.result || null)
+      req.onerror = () => reject(req.error)
+    })
+    db.close()
+    if (record?.blob) {
+      const restored = typeof File !== 'undefined'
+        ? new File([record.blob], record.name || 'dokumen', {
+          type: record.type || record.blob.type || 'application/octet-stream',
+          lastModified: record.lastModified || Date.now(),
+        })
+        : record.blob
+      job.pendingFile = restored
+      return restored
+    }
+  } catch { /* abaikan */ }
+  return null
+}
+
+export function setPendingFile(file) {
+  job.pendingFile = file || null
+  persistPendingFile(job.pendingFile)
+}
 
 function loadStoredDraft() {
   try {
@@ -41,6 +113,7 @@ export const job = reactive({
   errorDetails: null,
   documentId: null,
   title: '',
+  pendingFile: null, // Pertahankan File DOCX/PDF asli lintas navigasi SPA (mis. ke /token lalu kembali ke /analisis)
   draft: loadStoredDraft(),
 })
 
@@ -105,6 +178,7 @@ export async function startJob({ text, title, file, aiConsent = true, idempotenc
     }
     auth.refreshProfile()
     job.documentId = data.document.id
+    setPendingFile(null)
     job.status = 'done'
     return data
   } catch (e) {

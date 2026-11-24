@@ -6,42 +6,47 @@ import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
-import { config, checkStartupConfig } from './config.js';
-import { errorHandler, notFound } from './middleware/errors.js';
+import { config, checkStartupConfig, validateProductionConfig } from './config.js';
+import { attachRequestId, errorHandler, notFound } from './middleware/errors.js';
 import { requireAuth } from './middleware/auth.js';
 import {
   register, login, googleLogin, verifyOtp, resendOtp, refresh, logout, me, forgotPassword, resetPassword,
 } from './routes/auth.js';
 import {
-  createAnalysis, estimateAnalysis, upload,
+  createAnalysis, estimateAnalysis, upload, uploadAnalysisFiles,
   MIN_ANALYSIS_WORDS, AI_MAX_CHARS, MAX_UPLOAD_BYTES,
 } from './routes/analysis.js';
 import {
-  getTokenBalance, listTokenTransactions, listTokenPackages,
+  getTokenBalance, listTokenTransactions, listDownloadTransactions, listTokenPackages,
 } from './routes/tokens.js';
 import {
-  listDocuments, getDocument, decideIssues, restoreOriginal, renameDocument,
-  deleteDocuments, downloadDocument,
+  listDocuments, getDocument, getDocumentPreservation, decideIssues, restoreOriginal, renameDocument,
+  deleteDocuments, downloadDocument, reserveDocumentDownload, fetchPreparedDownload,
+  commitDocumentDownload, cancelDocumentDownload, downloadAnalysisReport,
 } from './routes/documents.js';
 import {
-  listPayments, createPaymentHandler, getPayment, paymentQr,
+  listPayments, createPaymentHandler, getPayment, renewPayment, paymentQr,
   paymentInvoice, paymentNotification,
 } from './routes/payments.js';
 import { paymentInfo } from './services/payments.js';
 import { TOKEN_PACKAGES, WORDS_PER_TOKEN, getTokenPricingInfo } from './services/tokens.js';
 import { startRetentionJob } from './services/retention.js';
-import bcrypt from 'bcryptjs';
-import { initStorage, storage, users, tokenTransactions } from './repositories/index.js';
+import { initStorage, closeStorage, healthCheck, storage } from './repositories/index.js';
 import { getProviderInfo } from './services/aiProvider.js';
+import { getAiUsageSnapshot, fetchOpenRouterAccountLimits } from './services/aiQuota.js';
+import { getDocumentProcessingCapabilities } from './services/documentProcessor.js';
 
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
+  app.use(attachRequestId);
 
   app.use(helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
     crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: config.env === 'production' ? { maxAge: 31536000, includeSubDomains: true } : false,
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
@@ -54,12 +59,30 @@ export function createApp() {
       },
     },
   }));
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    next();
+  });
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      const local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-      const allowed = [config.frontendUrl, 'http://localhost:5173', 'http://localhost:4173'];
-      cb(null, allowed.includes(origin) || (config.env !== 'production' && local));
+      const allowedOrigins = new Set([
+        ...config.corsOrigins,
+        ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL.trim().replace(/\/$/, '')] : []),
+        ...String(process.env.CORS_ORIGINS || '')
+          .split(',')
+          .map((s) => s.trim().replace(/\/$/, ''))
+          .filter(Boolean),
+      ]);
+      if (allowedOrigins.has(origin)) return cb(null, true);
+      if ((process.env.NODE_ENV || config.env) !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return cb(null, true);
+      }
+      return cb(null, false);
     },
     credentials: true,
   }));
@@ -78,14 +101,50 @@ export function createApp() {
     standardHeaders: 'draft-7',
     legacyHeaders: false,
   });
+  const exportLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_EXPORT_MAX || 30),
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+  });
+  const paymentLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_PAYMENT_MAX || 30),
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+  });
+  const webhookLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_WEBHOOK_MAX || 120),
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+  });
+  const adminLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_ADMIN_MAX || 30),
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+  });
 
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health', async (_req, res) => {
     const ai = getProviderInfo();
     const pay = paymentInfo();
-    res.json({
-      ok: true,
+    const [db, docProc] = await Promise.all([
+      healthCheck(),
+      getDocumentProcessingCapabilities(),
+    ]);
+    res.status(db.ok ? 200 : 503).json({
+      ok: db.ok,
       storage: storage.detail,
-      ai: { provider: ai.provider, model: ai.model || null, configured: ai.configured, timeout_ms: ai.timeoutMs },
+      database: db,
+      document_processing: docProc,
+      ai: {
+        provider: ai.provider,
+        model: ai.model || null,
+        configured: ai.configured,
+        timeout_ms: ai.timeoutMs,
+        fallback: ai.fallback,
+      },
       tokens: {
         available: pay.available,
         mode: pay.mode,
@@ -119,25 +178,66 @@ export function createApp() {
   // ---- Token & Saldo ----
   app.get('/api/tokens/packages', listTokenPackages);
   app.get('/api/tokens/transactions', requireAuth, listTokenTransactions);
+  app.get('/api/tokens/downloads', requireAuth, listDownloadTransactions);
   app.get('/api/tokens', requireAuth, getTokenBalance);
 
   // ---- Analisis (FR-02..FR-06) ----
   app.post('/api/analysis/estimate', requireAuth, upload.single('file'), estimateAnalysis);
-  app.post('/api/analysis', requireAuth, analysisLimiter, upload.single('file'), createAnalysis);
+  app.post('/api/analysis', requireAuth, analysisLimiter, uploadAnalysisFiles, createAnalysis);
 
   // ---- Dokumen, saran, unduhan (FR-08..FR-11) ----
   app.get('/api/documents', requireAuth, listDocuments);
   app.delete('/api/documents', requireAuth, deleteDocuments);
-  app.get('/api/documents/:id/download', requireAuth, downloadDocument);
+  app.post('/api/documents/:id/download/reserve', requireAuth, exportLimiter, reserveDocumentDownload);
+  app.get('/api/documents/:id/download/file', requireAuth, exportLimiter, fetchPreparedDownload);
+  app.post('/api/documents/:id/download/:txId/commit', requireAuth, exportLimiter, commitDocumentDownload);
+  app.post('/api/documents/:id/download/:txId/cancel', requireAuth, exportLimiter, cancelDocumentDownload);
+  app.get('/api/documents/:id/download', requireAuth, exportLimiter, downloadDocument);
+  app.get('/api/documents/:id/analysis-report', requireAuth, exportLimiter, downloadAnalysisReport);
+  app.get('/api/documents/:id/preservation', requireAuth, getDocumentPreservation);
   app.get('/api/documents/:id', requireAuth, getDocument);
   app.patch('/api/documents/:id/issues', requireAuth, decideIssues);
   app.post('/api/documents/:id/restore', requireAuth, restoreOriginal);
   app.patch('/api/documents/:id/title', requireAuth, renameDocument);
 
+  // ---- Pemantauan Kuota AI (Admin - fail-closed) ----
+  app.get('/api/admin/ai-usage', requireAuth, adminLimiter, async (req, res) => {
+    const adminEmails = String(process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (adminEmails.length === 0) {
+      return res.status(403).json({
+        error: 'Akses pemantauan kuota AI dinonaktifkan: ADMIN_EMAILS belum dikonfigurasi di server.',
+        code: 'ADMIN_NOT_CONFIGURED',
+      });
+    }
+    if (!adminEmails.includes(String(req.user?.email || '').toLowerCase())) {
+      return res.status(403).json({ error: 'Akses pemantauan kuota AI hanya untuk admin.', code: 'ADMIN_ONLY' });
+    }
+    const ai = getProviderInfo();
+    const usage = getAiUsageSnapshot();
+    const includeLive = req.query.live !== 'false';
+    const openrouterLimits = includeLive && process.env.OPENROUTER_API_KEY
+      ? await fetchOpenRouterAccountLimits()
+      : { available: false, scope: 'account', reason: 'Live OpenRouter account limits not queried or OPENROUTER_API_KEY not set.' };
+    return res.json({
+      primary_provider: {
+        provider: ai.provider,
+        model: ai.model || null,
+        configured: ai.configured,
+      },
+      fallback_provider: ai.fallback,
+      usage,
+      openrouter_account_limits: openrouterLimits,
+    });
+  });
+
   // ---- Pembayaran Token (FR-07) ----
   app.get('/api/payments', requireAuth, listPayments);
-  app.post('/api/payments', requireAuth, createPaymentHandler);
-  app.post('/api/payments/notify', paymentNotification);
+  app.post('/api/payments', requireAuth, paymentLimiter, createPaymentHandler);
+  app.post('/api/payments/notify', webhookLimiter, paymentNotification);
+  app.post('/api/payments/:orderId/renew', requireAuth, paymentLimiter, renewPayment);
   app.get('/api/payments/:orderId/qr', requireAuth, paymentQr);
   app.get('/api/payments/:orderId/invoice', requireAuth, paymentInvoice);
   app.get('/api/payments/:orderId', requireAuth, getPayment);
@@ -153,69 +253,36 @@ export function createApp() {
   return app;
 }
 
-async function seedInitialAccounts() {
-  if (!process.env.SEED_ACCOUNTS) return;
-
-  // 1. Akun Test (10 Token)
-  const testEmail = process.env.TEST_EMAIL || 'test@runut.local';
-  const testPassword = process.env.TEST_PASSWORD || 'Test12345!';
-  const testUser = (await users.findByEmail(testEmail)) || (await users.create({
-    name: 'Akun Test',
-    email: testEmail,
-    password_hash: await bcrypt.hash(testPassword, 10),
-    token_balance: 0,
-  }));
-  await tokenTransactions.credit({
-    user_id: testUser.id,
-    amount: 10,
-    type: 'purchase',
-    description: 'Saldo awal akun uji coba (Paket Populer - 10 token)',
-    reference_type: 'seed',
-    reference_id: 'SEED-TEST-10',
-    idempotency_key: 'seed:test:10',
-  });
-  console.log(`[auth] akun test (10 token): ${testEmail} / ${testPassword}`);
-
-  // 2. Akun Demo / Pro lama (10 Token)
-  const demoEmail = process.env.PRO_EMAIL || 'premium@runut.local';
-  const demoPassword = process.env.PRO_PASSWORD || 'Premium12345!';
-  const demoUser = (await users.findByEmail(demoEmail)) || (await users.create({
-    name: 'Pengguna Demo',
-    email: demoEmail,
-    password_hash: await bcrypt.hash(demoPassword, 10),
-    token_balance: 0,
-  }));
-  await tokenTransactions.credit({
-    user_id: demoUser.id,
-    amount: 10,
-    type: 'purchase',
-    description: 'Saldo awal akun uji coba (Paket Populer - 10 token)',
-    reference_type: 'seed',
-    reference_id: 'SEED-DEMO-10',
-    idempotency_key: 'seed:demo:10',
-  });
-  console.log(`[auth] akun demo (10 token): ${demoEmail} / ${demoPassword}`);
-
-  // 3. Akun Saldo 0
-  const zeroEmail = process.env.FREE_EMAIL || 'free@runut.local';
-  const zeroPassword = process.env.FREE_PASSWORD || 'Free12345!';
-  (await users.findByEmail(zeroEmail)) || (await users.create({
-    name: 'Pengguna Baru (0 Token)',
-    email: zeroEmail,
-    password_hash: await bcrypt.hash(zeroPassword, 10),
-    token_balance: 0,
-  }));
-  console.log(`[auth] akun uji saldo 0: ${zeroEmail} / ${zeroPassword}`);
-}
-
 export async function start() {
+  validateProductionConfig();
   for (const problem of checkStartupConfig()) console.warn('[config] ' + problem);
   const info = await initStorage();
   console.log(`[runut] penyimpanan: ${info.detail}`);
-  await seedInitialAccounts();
+  const docCaps = await getDocumentProcessingCapabilities().catch(() => null);
+  if (docCaps && !docCaps.libreoffice.available) {
+    const guidance = docCaps.libreoffice.install_guidance;
+    console.warn(`[document-processing] LibreOffice tidak terdeteksi (${docCaps.platform}). ${guidance?.summary || ''} Docker tidak wajib untuk pengembangan lokal; atur ${guidance?.recommended_env || 'LIBREOFFICE_PATH'} bila konversi DOC/DOCX-ke-PDF diperlukan.`);
+  } else if (docCaps?.libreoffice?.available) {
+    console.log(`[document-processing] LibreOffice siap: ${docCaps.libreoffice.binary} (${docCaps.libreoffice.version})`);
+  }
   const app = createApp();
-  startRetentionJob();
-  return app.listen(config.port, () => {
-    console.log(`[runut] API berjalan di http://localhost:${config.port}`);
+  const retentionTimer = startRetentionJob();
+  const server = app.listen(config.port, () => {
+    console.log(`[runut] API listening on port ${config.port} (env=${config.env})`);
   });
+
+  const shutdown = (signal) => {
+    console.log(JSON.stringify({ event: 'shutdown_started', signal }));
+    clearInterval(retentionTimer);
+    server.close(async () => {
+      await closeStorage();
+      console.log(JSON.stringify({ event: 'shutdown_complete', signal }));
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000).unref?.();
+  };
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+
+  return server;
 }

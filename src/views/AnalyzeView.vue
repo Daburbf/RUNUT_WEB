@@ -10,19 +10,22 @@ import {
   countWords,
   calculateTokenCost,
 } from '../utils/categories'
-import { job, startJob, estimateJob } from '../store/analysis'
-
-const SAMPLE = `Menulis adalah hal yang sangat penting bagi pelajar. Menulis membantu kita berpikir dengan runtut. Selain itu, menulis juga sangat penting untuk karier. Selain itu, banyak orang tidak sadar kalau tulisan mereka terasa kaku. Saya sering menulis setiap hari, dan saya merasa kemampuan menulis sangat penting untuk masa depan, karena dengan menulis kita bisa menyampaikan gagasan, membangun argumen yang kuat, serta meyakinkan pembaca bahwa ide yang kita sampaikan memang layak untuk dipertimbangkan secara serius oleh banyak pihak.`
+import { job, startJob, estimateJob, setPendingFile, hydratePendingFile } from '../store/analysis'
 
 const router = useRouter()
-const file = ref(null)
+const file = computed({
+  get: () => job.pendingFile,
+  set: (v) => { setPendingFile(v || null) },
+})
 const extracting = ref(false)
 const showRules = ref(false)
 const error = ref('')
+const autoFilledTitle = ref('')
 let alive = true
 
 onMounted(() => {
   auth.refreshProfile()
+  hydratePendingFile()
 })
 
 onBeforeUnmount(() => { alive = false })
@@ -87,8 +90,6 @@ async function run() {
   })
 }
 
-watch(() => job.status, (s) => { if (s === 'running') file.value = null })
-
 async function onFile(e) {
   const f = e.target.files?.[0]
   e.target.value = ''
@@ -98,8 +99,8 @@ async function onFile(e) {
     error.value = 'Ukuran file melebihi batas maksimal 5 MB.'
     return
   }
-  if (!/\.(txt|docx|pdf)$/i.test(f.name)) {
-    error.value = 'Format file tidak didukung. Gunakan .txt, .docx, atau .pdf (maksimal 5 MB).'
+  if (!/\.(txt|doc|docx|pdf)$/i.test(f.name)) {
+    error.value = 'Format file tidak didukung. Gunakan .txt, .doc, .docx, atau .pdf (maksimal 5 MB).'
     return
   }
   error.value = ''
@@ -109,13 +110,16 @@ async function onFile(e) {
     if (typeof est.extracted_text === 'string') {
       text.value = est.extracted_text
     }
-    if (!title.value.trim()) {
-      title.value = est.title || f.name.replace(/\.(txt|docx|pdf)$/i, '')
+    if (!title.value.trim() || (autoFilledTitle.value && title.value === autoFilledTitle.value)) {
+      const nextTitle = est.title || f.name.replace(/\.(txt|doc|docx|pdf)$/i, '')
+      title.value = nextTitle
+      autoFilledTitle.value = nextTitle
     }
     if (est.balance !== undefined) {
       auth.setBalance(est.balance)
     }
-    file.value = null
+    // Pertahankan file asli (.doc/.docx/.pdf) di global store agar template dokumen dijaga utuh saat analisis & unduhan
+    file.value = /\.(doc|docx|pdf)$/i.test(f.name) ? f : null
   } catch (err) {
     error.value = err.message || 'Gagal membaca isi file. Pastikan file tidak rusak.'
   } finally {
@@ -124,10 +128,20 @@ async function onFile(e) {
 }
 
 function clearDraft() {
+  title.value = ''
   text.value = ''
   file.value = null
+  autoFilledTitle.value = ''
   error.value = ''
 }
+
+watch(() => text.value, (val) => {
+  if (!String(val || '').trim() && autoFilledTitle.value && title.value === autoFilledTitle.value) {
+    title.value = ''
+    file.value = null
+    autoFilledTitle.value = ''
+  }
+})
 </script>
 
 <template>
@@ -144,20 +158,12 @@ function clearDraft() {
         </h1>
       </div>
 
-      <!-- Bar Fitur Ringkas (Unggah, Contoh, Ketentuan, Riwayat Terakhir) -->
+      <!-- Bar Fitur Ringkas (Unggah, Ketentuan, Riwayat Terakhir) -->
       <div class="flex flex-wrap items-center gap-2">
         <label class="swiss-snap-fast inline-flex min-h-[38px] cursor-pointer items-center border-2 border-black bg-white px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider hover:bg-black hover:text-white">
           <i class="fa-solid fa-file-arrow-up mr-1.5 text-[#FF3000]"></i>Unggah File
-          <input type="file" accept=".txt,.docx,.pdf" class="hidden" @change="onFile" />
+          <input type="file" accept=".txt,.doc,.docx,.pdf" class="hidden" @change="onFile" />
         </label>
-
-        <button
-          type="button"
-          class="swiss-snap-fast min-h-[38px] border-2 border-black/25 bg-white px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-black/80 hover:border-black hover:text-black"
-          @click="text = SAMPLE; title ||= 'Contoh Esai Akademik'; error = ''"
-        >
-          <i class="fa-solid fa-flask mr-1.5"></i>Contoh Teks
-        </button>
 
         <button
           type="button"
@@ -187,7 +193,7 @@ function clearDraft() {
         <div class="flex flex-wrap items-center gap-x-6 gap-y-1.5 font-mono uppercase tracking-wider text-black/75">
           <span><strong class="text-[#FF3000]">■</strong> Minimal {{ MIN_ANALYSIS_WORDS }} kata</span>
           <span><strong class="text-[#FF3000]">■</strong> Maks {{ AI_MAX_CHARS.toLocaleString('id-ID') }} karakter</span>
-          <span><strong class="text-[#FF3000]">■</strong> Berkas .TXT, .DOCX, .PDF (Maks 5 MB)</span>
+          <span><strong class="text-[#FF3000]">■</strong> Berkas .TXT, .DOC, .DOCX, .PDF (Maks 5 MB)</span>
           <span><strong class="text-[#FF3000]">■</strong> Saldo dipotong hanya saat analisis dimulai</span>
         </div>
         <button type="button" class="font-mono text-[10px] font-bold uppercase tracking-widest underline" @click="showRules = false">
@@ -207,8 +213,15 @@ function clearDraft() {
           placeholder="Judul dokumen (opsional)..."
           class="w-full bg-transparent text-base font-bold uppercase tracking-tight placeholder:text-black/30 focus:outline-none sm:text-lg"
         />
+        <span
+          v-if="file"
+          class="hidden shrink-0 items-center gap-1.5 border border-black bg-[#F2F2F2] px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider sm:inline-flex"
+          title="Dokumen asli dipertahankan untuk menjaga format saat diunduh"
+        >
+          <i class="fa-solid fa-shield-halved text-[#FF3000]"></i>{{ file.name }}
+        </span>
         <button
-          v-if="text"
+          v-if="text || file || title"
           type="button"
           class="swiss-snap-fast shrink-0 font-mono text-[11px] font-bold uppercase tracking-widest text-black/45 hover:text-[#FF3000]"
           @click="clearDraft"

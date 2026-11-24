@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-runut}
+      POSTGRES_USER: ${POSTGRES_USER:-runut}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-runut_dev_password}
+    volumes:
+      - runut_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-runut} -d ${POSTGRES_DB:-runut}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-runut}:${POSTGRES_PASSWORD:-runut_dev_password}@postgres:5432/${POSTGRES_DB:-runut}
+      DATABASE_SSL: "false"
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-to-a-32-char-production-secret}
+      STRICT_FREE_AI_ONLY: ${STRICT_FREE_AI_ONLY:-true}
+      DOCX_PDF_CONVERSION_ENABLED: ${DOCX_PDF_CONVERSION_ENABLED:-true}
+    volumes:
+      - runut_uploads:/app/server/.data/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  runut_pgdata:
+  runut_uploads:

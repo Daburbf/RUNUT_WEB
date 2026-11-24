@@ -38,6 +38,11 @@ function logout() {
           </router-link>
         </li>
         <li>
+          <router-link to="/tentang" class="swiss-nav-link text-xs font-bold uppercase tracking-widest" exact-active-class="!text-[#FF3000]">
+            <span data-label="Tentang">Tentang</span>
+          </router-link>
+        </li>
+        <li>
           <router-link to="/analisis" class="swiss-nav-link text-xs font-bold uppercase tracking-widest" exact-active-class="!text-[#FF3000]">
             <span data-label="Analisis">Analisis</span>
           </router-link>
@@ -50,16 +55,6 @@ function logout() {
         <li>
           <router-link to="/token" class="swiss-nav-link text-xs font-bold uppercase tracking-widest" exact-active-class="!text-[#FF3000]">
             <span data-label="Isi Token">Isi Token</span>
-          </router-link>
-        </li>
-        <li>
-          <router-link to="/akun" class="swiss-nav-link text-xs font-bold uppercase tracking-widest" exact-active-class="!text-[#FF3000]">
-            <span data-label="Akun">Akun</span>
-          </router-link>
-        </li>
-        <li>
-          <router-link to="/tentang" class="swiss-nav-link text-xs font-bold uppercase tracking-widest" exact-active-class="!text-[#FF3000]">
-            <span data-label="Tentang">Tentang</span>
           </router-link>
         </li>
       </ul>
@@ -81,20 +76,29 @@ function logout() {
         <template v-if="auth.user">
           <router-link
             to="/token"
-            class="swiss-snap group flex items-center gap-2 border-2 border-black bg-[#F2F2F2] px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-black hover:border-[#FF3000] hover:bg-[#FF3000] hover:text-white"
+            class="swiss-snap group flex items-center gap-2 border-2 border-black bg-[#F2F2F2] px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-black hover:-translate-y-0.5 hover:border-[#FF3000] hover:bg-[#FF3000] hover:text-white hover:shadow-[2px_2px_0_#000] active:translate-y-0 active:shadow-none"
             title="Klik untuk isi token"
           >
-            <i class="fa-solid fa-coins text-[#FF3000] transition-colors duration-200 group-hover:text-white"></i>
+            <i class="fa-solid fa-coins text-[#FF3000] transition-transform duration-200 group-hover:scale-110 group-hover:text-white"></i>
             <span class="tabular-nums">{{ tokenBalance }} Token</span>
           </router-link>
-          <router-link to="/akun" class="swiss-snap max-w-[130px] truncate text-xs font-bold uppercase tracking-wide text-black/80 hover:text-[#FF3000]">
-            {{ auth.user.name }}
+          <router-link
+            to="/akun"
+            class="swiss-snap group inline-flex items-center gap-1.5 border-2 border-transparent px-2.5 py-1.5 text-xs font-bold uppercase tracking-wide text-black/80 hover:-translate-y-0.5 hover:border-black hover:bg-[#F2F2F2] hover:text-black hover:shadow-[2px_2px_0_#000] active:translate-y-0 active:shadow-none"
+            exact-active-class="!border-black !bg-[#F2F2F2] !text-[#FF3000]"
+            title="Buka halaman akun"
+          >
+            <i class="fa-regular fa-user text-[11px] text-black/60 transition-transform duration-200 group-hover:scale-110 group-hover:text-[#FF3000]"></i>
+            <span class="max-w-[120px] truncate">{{ auth.user.name }}</span>
           </router-link>
           <button
-            class="swiss-snap border-2 border-[#FF3000] bg-[#FF3000] px-3 py-1.5 text-xs font-bold uppercase tracking-widest text-white hover:border-[#CC2600] hover:bg-[#CC2600]"
+            type="button"
+            class="swiss-snap group inline-flex cursor-pointer items-center gap-1.5 border-2 border-[#FF3000] bg-[#FF3000] px-3 py-1.5 text-xs font-bold uppercase tracking-widest text-white hover:-translate-y-0.5 hover:border-black hover:bg-black hover:shadow-[2px_2px_0_#FF3000] active:translate-y-0 active:shadow-none"
+            title="Keluar dari akun"
             @click="logout"
           >
-            Keluar
+            <span>Keluar</span>
+            <i class="fa-solid fa-right-from-bracket text-[11px] transition-transform duration-200 group-hover:translate-x-0.5"></i>
           </button>
         </template>
         <template v-else>
@@ -168,20 +172,20 @@ function logout() {
           <router-link to="/" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
             <span>Beranda</span><span class="font-mono text-xs text-[#FF3000]">01</span>
           </router-link>
+          <router-link to="/tentang" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
+            <span>Tentang</span><span class="font-mono text-xs text-[#FF3000]">02</span>
+          </router-link>
           <router-link to="/analisis" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
-            <span>Analisis</span><span class="font-mono text-xs text-[#FF3000]">02</span>
+            <span>Analisis</span><span class="font-mono text-xs text-[#FF3000]">03</span>
           </router-link>
           <router-link to="/riwayat" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
-            <span>Riwayat</span><span class="font-mono text-xs text-[#FF3000]">03</span>
+            <span>Riwayat</span><span class="font-mono text-xs text-[#FF3000]">04</span>
           </router-link>
           <router-link to="/token" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
-            <span>Isi Token</span><span class="font-mono text-xs text-[#FF3000]">04</span>
+            <span>Isi Token</span><span class="font-mono text-xs text-[#FF3000]">05</span>
           </router-link>
           <router-link to="/akun" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
-            <span>Akun ({{ auth.user.name }})</span><span class="font-mono text-xs text-[#FF3000]">05</span>
-          </router-link>
-          <router-link to="/tentang" class="flex items-center justify-between border-b border-black/10 px-2 py-3 text-sm font-bold uppercase tracking-wide hover:bg-[#F2F2F2] hover:text-[#FF3000]">
-            <span>Tentang</span><span class="font-mono text-xs text-[#FF3000]">06</span>
+            <span>Akun ({{ auth.user.name }})</span><span class="font-mono text-xs text-[#FF3000]">06</span>
           </router-link>
           <div class="mt-3 flex flex-col gap-2 pt-2">
             <button class="min-h-[42px] border-2 border-[#FF3000] bg-[#FF3000] px-3 py-2 text-xs font-bold uppercase tracking-widest text-white hover:border-[#CC2600] hover:bg-[#CC2600]" @click="logout">

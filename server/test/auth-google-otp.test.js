@@ -20,8 +20,10 @@ const uniqueEmail = (prefix = 'user') => `${prefix}${Date.now()}${Math.random().
 test('login Google: 503 bila GOOGLE_CLIENT_ID belum dikonfigurasi, lalu berhasil membuat & menautkan akun bila dikonfigurasi', async () => {
   const prevClientId = config.google.clientId;
   const prevConfigured = config.google.configured;
+  const prevEnvClientId = process.env.GOOGLE_CLIENT_ID;
   config.google.clientId = '';
   config.google.configured = false;
+  delete process.env.GOOGLE_CLIENT_ID;
 
   try {
     const noCfg = await request(app).post('/api/auth/google').send({ credential: 'fake-token' });
@@ -107,6 +109,8 @@ test('login Google: 503 bila GOOGLE_CLIENT_ID belum dikonfigurasi, lalu berhasil
     setGoogleTokenVerifier(null);
     config.google.clientId = prevClientId;
     config.google.configured = prevConfigured;
+    if (prevEnvClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+    else process.env.GOOGLE_CLIENT_ID = prevEnvClientId;
   }
 });
 

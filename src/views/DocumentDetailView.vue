@@ -32,13 +32,44 @@ async function saveTitle() {
     clearTimeout(saveTitle.t); saveTitle.t = setTimeout(() => (notice.value = ''), 2600)
   } catch (e) { error.value = e.message }
 }
+const pendingDownload = ref(null)
 async function download(format) {
   error.value = ''
   try {
-    await documents.download(data.value.document.id, format, `${data.value.document.title}-revisi.${format}`)
-    notice.value = `Dokumen (.${format.toUpperCase()}) berhasil diunduh (-1 token).`
+    const res = await documents.download(data.value.document.id, format, `${data.value.document.title}-revisi.${format}`)
+    if (res?.status === 'cancelled') {
+      notice.value = res.message || 'Unduhan dibatalkan. Token Anda tidak dipotong.'
+      clearTimeout(download.t); download.t = setTimeout(() => (notice.value = ''), 3200)
+      return
+    }
+    if (res?.status === 'awaiting_confirmation') {
+      pendingDownload.value = res
+      notice.value = res.message
+      return
+    }
+    if (res?.status === 'busy') {
+      notice.value = res.message
+      return
+    }
+    notice.value = `Dokumen (.${format.toUpperCase()}) berhasil disimpan (-1 token).`
     clearTimeout(download.t); download.t = setTimeout(() => (notice.value = ''), 2600)
-  } catch (e) { error.value = e.message }
+  } catch (e) { error.value = e.message || 'File gagal dibuat. Silakan coba kembali.' }
+}
+async function confirmPendingDownload() {
+  if (!pendingDownload.value) return
+  try {
+    await documents.confirmDownload(pendingDownload.value.documentId, pendingDownload.value.transactionId)
+    pendingDownload.value = null
+    notice.value = 'Unduhan dikonfirmasi (-1 token).'
+  } catch (e) { error.value = e.message || 'Konfirmasi unduhan belum berhasil.' }
+}
+async function cancelPendingDownload() {
+  if (!pendingDownload.value) return
+  try {
+    const res = await documents.cancelDownload(pendingDownload.value.documentId, pendingDownload.value.transactionId, 'user_cancelled_fallback')
+    pendingDownload.value = null
+    notice.value = res?.message || 'Unduhan dibatalkan. Token Anda tidak dipotong.'
+  } catch (e) { error.value = e.message || 'Gagal membatalkan reservasi.' }
 }
 onMounted(() => load(props.id || window.location.hash.match(/\/dokumen\/([^/?]+)/)?.[1]))
 </script>
@@ -53,6 +84,13 @@ onMounted(() => load(props.id || window.location.hash.match(/\/dokumen\/([^/?]+)
         {{ data.document.word_count }} kata · {{ data.document.token_cost || 1 }} token · {{ data.issues.length }} temuan · diperbarui {{ new Date(data.document.updated_at).toLocaleString('id-ID') }}
       </p>
       <p v-if="notice" class="mt-4 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-wide text-white"><span class="text-[#FF3000]">■</span> {{ notice }}</p>
+      <div v-if="pendingDownload" class="mt-3 flex flex-wrap items-center justify-between gap-3 border-2 border-black bg-[#F2F2F2] px-4 py-3 text-xs font-bold uppercase tracking-wide">
+        <span>Konfirmasi penyimpanan <strong>{{ pendingDownload.filename }}</strong> (1 token sedang direservasi)</span>
+        <div class="flex items-center gap-2">
+          <BaseButton size="sm" @click="confirmPendingDownload">Konfirmasi Tersimpan (-1 Token)</BaseButton>
+          <BaseButton size="sm" variant="secondary" @click="cancelPendingDownload">Batalkan (Token Tidak Dipotong)</BaseButton>
+        </div>
+      </div>
       <p v-if="error" class="mt-4 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-wide text-white"><span class="text-[#FF3000]">■</span> {{ error }}</p>
       <div class="mt-6 flex flex-wrap items-center gap-2">
         <input v-model="renamed" @keyup.enter="saveTitle" class="h-11 min-w-0 flex-1 border-2 border-black px-3 text-sm font-bold uppercase tracking-wide sm:min-w-[220px]" aria-label="Judul dokumen" />

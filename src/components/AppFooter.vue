@@ -34,9 +34,9 @@ const logo = import.meta.env.BASE_URL + 'images/logo.svg'
         </ul>
       </nav>
       <div>
-        <p class="font-mono text-xs uppercase tracking-widest text-[#FF3000]">Sistem Token</p>
+        <p class="font-mono text-xs uppercase tracking-widest text-[#FF3000]">Privasi &amp; Dokumen</p>
         <p class="mt-4 text-sm leading-relaxed text-white/60">
-          Tanpa langganan bulanan. Pilihan paket: 5 token (Rp5.000), 10 token (Rp9.000), dan 20 token (Rp16.000). Seluruh saran perbaikan dan unduhan PDF/DOCX/TXT langsung terbuka. Dokumen tersimpan 30 hari.
+          Naskah yang Anda unggah tetap menjadi milik Anda. Hasil suntingan disimpan selama 30 hari agar mudah diakses kembali, dan dapat dihapus kapan saja melalui halaman Riwayat.
         </p>
       </div>
     </div>

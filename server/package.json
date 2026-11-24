@@ -9,6 +9,8 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.2.0",
+    "@xmldom/xmldom": "^0.9.12",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
@@ -18,12 +20,14 @@
     "express-rate-limit": "^7.4.1",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.2",
     "mammoth": "^1.9.1",
     "multer": "^2.0.1",
-    "nodemailer": "^6.9.15",
+    "nodemailer": "^10.6.1",
     "pdf-lib": "^1.17.1",
-    "pdf-parse": "^1.1.1",
-    "pg": "^8.13.1"
+    "pdfjs-dist": "^6.5.438",
+    "pg": "^8.13.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "supertest": "^7.0.0"

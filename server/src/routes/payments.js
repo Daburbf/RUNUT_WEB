@@ -3,7 +3,7 @@ import { HttpError, asyncHandler } from '../middleware/errors.js';
 import { buildPdf } from '../services/pdf.js';
 import {
   createPayment, publicPayment, paymentInfo, refreshPayment,
-  handleNotification, fetchQrImage,
+  renewQrisPayment, handleNotification, fetchQrImage,
 } from '../services/payments.js';
 
 const STATUS_LABEL = {
@@ -91,6 +91,23 @@ export const paymentInvoice = asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="invoice-${row.order_id}.pdf"`);
   res.send(pdf);
+});
+
+// POST /api/payments/:orderId/renew - perbarui QRIS kedaluwarsa dengan kode dinamis 10 menit baru.
+export const renewPayment = asyncHandler(async (req, res) => {
+  const row = await ownedPayment(req.user.id, req.params.orderId);
+  const result = await renewQrisPayment(req.user, row);
+  const summary = await tokenTransactions.summaryByUser(req.user.id);
+  res.status(result.renewed && !result.duplicate ? 201 : 200).json({
+    ok: true,
+    renewed: Boolean(result.renewed),
+    duplicate: Boolean(result.duplicate),
+    already_paid: Boolean(result.already_paid),
+    still_active: Boolean(result.still_active),
+    previous_order_id: result.previous_order_id,
+    payment: publicPayment(result.payment),
+    token_balance: summary.balance,
+  });
 });
 
 // POST /api/payments/notify - webhook Midtrans.

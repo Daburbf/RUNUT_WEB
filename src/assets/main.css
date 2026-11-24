@@ -7,6 +7,33 @@
    Putih #FFFFFF · Hitam #000000 · Abu #F2F2F2 · Aksen #FF3000
    ============================================================ */
 
+:root {
+  /* Palet sorotan & ringkasan Swiss Editorial (Desaturated, kalem, selaras monokrom) */
+  --hl-ai-color: #3b5b7c;
+  --hl-ai-bg: rgba(59, 91, 124, 0.08);
+  --hl-ai-text: #2c445e;
+
+  --hl-strong-color: #9e3b33;
+  --hl-strong-bg: rgba(158, 59, 51, 0.08);
+  --hl-strong-text: #7d2d27;
+
+  --hl-citation-color: #9a5b2f;
+  --hl-citation-bg: rgba(154, 91, 47, 0.08);
+  --hl-citation-text: #784522;
+
+  --hl-sim-color: #8a6d2d;
+  --hl-sim-bg: rgba(138, 109, 45, 0.09);
+  --hl-sim-text: #6b5320;
+
+  --hl-safe-color: #2f6f4e;
+  --hl-safe-bg: rgba(47, 111, 78, 0.08);
+  --hl-safe-text: #23543b;
+
+  --hl-neutral-color: #636369;
+  --hl-neutral-bg: rgba(99, 99, 105, 0.08);
+  --hl-neutral-text: #4a4a50;
+}
+
 html { background: #ffffff; scroll-behavior: smooth; }
 body {
   background: #ffffff;
@@ -108,6 +135,33 @@ summary.summary-plain::marker { content: ''; }
 
 /* ---- Adaptasi Tema Gelap (prefers-color-scheme: dark) ---- */
 @media (prefers-color-scheme: dark) {
+  :root {
+    /* Palet sorotan & ringkasan Dark Mode (Muted, rendah silau, kontras nyaman di #161616) */
+    --hl-ai-color: #7fa3c4;
+    --hl-ai-bg: rgba(127, 163, 196, 0.14);
+    --hl-ai-text: #bfd4e8;
+
+    --hl-strong-color: #c97a73;
+    --hl-strong-bg: rgba(201, 122, 115, 0.15);
+    --hl-strong-text: #e8beb9;
+
+    --hl-citation-color: #c9936b;
+    --hl-citation-bg: rgba(201, 147, 107, 0.14);
+    --hl-citation-text: #e8cbb4;
+
+    --hl-sim-color: #c4ad6e;
+    --hl-sim-bg: rgba(196, 173, 110, 0.14);
+    --hl-sim-text: #e3d6b1;
+
+    --hl-safe-color: #6fa888;
+    --hl-safe-bg: rgba(111, 168, 136, 0.14);
+    --hl-safe-text: #b5d9c4;
+
+    --hl-neutral-color: #9a9aa1;
+    --hl-neutral-bg: rgba(154, 154, 161, 0.14);
+    --hl-neutral-text: #d4d4d8;
+  }
+
   html, body {
     background: #0e0e0e;
     color: #f5f5f5;

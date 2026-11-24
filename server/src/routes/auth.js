@@ -6,6 +6,11 @@ import { HttpError, asyncHandler } from '../middleware/errors.js';
 import { signAccessToken, setRefreshCookie, clearRefreshCookie, readRefreshToken } from '../middleware/auth.js';
 import { sendMail } from '../services/mailer.js';
 import { verifyGoogleIdToken } from '../services/googleAuth.js';
+import { logSecurityEvent, recordFailedLogin } from '../services/securityLog.js';
+
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || (process.env.NODE_ENV === 'production' ? 12 : 10));
+// Precomputed dummy bcrypt hash to equalize timing when login email does not exist
+const DUMMY_BCRYPT_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
 
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
 const OTP_RE = /^\d{6}$/;
@@ -31,6 +36,12 @@ export function publicUser(u, summary = null) {
 }
 
 const asString = (v) => (typeof v === 'string' ? v : '');
+const escapeHtml = (s) => String(s || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const otpSecret = () => process.env.OTP_SECRET || config.jwt.accessSecret;
 const hashOtp = (userId, purpose, otp) => crypto.createHmac('sha256', otpSecret()).update(`${userId}:${purpose}:${otp}`).digest('hex');
@@ -74,7 +85,7 @@ async function sendVerificationOtpEmail(user, otp) {
       to: user.email,
       subject: 'Kode OTP Verifikasi Akun Runut (berlaku 10 menit)',
       text: `Halo ${user.name},\n\nKode OTP verifikasi akun Runut Anda adalah: ${otp}\n\nKode ini berlaku selama 10 menit. Jangan bagikan kode ini kepada siapa pun.`,
-      html: `<p>Halo ${user.name},</p><p>Kode OTP verifikasi akun Runut Anda adalah:</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${otp}</p><p>Kode ini berlaku selama 10 menit. Jangan bagikan kode ini kepada siapa pun.</p>`,
+      html: `<p>Halo ${escapeHtml(user.name)},</p><p>Kode OTP verifikasi akun Runut Anda adalah:</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${escapeHtml(otp)}</p><p>Kode ini berlaku selama 10 menit. Jangan bagikan kode ini kepada siapa pun.</p>`,
     });
   } catch (err) {
     console.error(JSON.stringify({ event: 'mail_failed', reason: err.message }));
@@ -150,7 +161,7 @@ export const register = asyncHandler(async (req, res) => {
     throw new HttpError(429, 'Tunggu 60 detik sebelum mengirim ulang kode OTP.', { code: 'OTP_COOLDOWN' });
   }
 
-  const passwordHash = await bcrypt.hash(rawPassword, 10);
+  const passwordHash = await bcrypt.hash(rawPassword, BCRYPT_ROUNDS);
 
   if (useOtp) {
     const user = existing
@@ -244,13 +255,19 @@ export const login = asyncHandler(async (req, res) => {
   const rawPassword = asString(req.body?.password);
   if (!cleanEmail || !rawPassword) throw new HttpError(400, 'Email dan kata sandi wajib diisi.');
   const user = await users.findByEmail(cleanEmail);
+  const emailHash = sha256(cleanEmail).slice(0, 16);
   if (!user) {
+    // Equalize timing to mitigate account enumeration
+    await bcrypt.compare(rawPassword, DUMMY_BCRYPT_HASH).catch(() => {});
+    recordFailedLogin({ ip: req.ip, emailHash });
     throw new HttpError(401, 'Email atau kata sandi salah.');
   }
   if (!user.password_hash) {
+    recordFailedLogin({ ip: req.ip, emailHash });
     throw new HttpError(401, 'Akun ini terdaftar melalui Google. Silakan masuk dengan Google atau gunakan Lupa Kata Sandi untuk membuat kata sandi.');
   }
   if (!(await bcrypt.compare(rawPassword, user.password_hash))) {
+    recordFailedLogin({ ip: req.ip, emailHash });
     throw new HttpError(401, 'Email atau kata sandi salah.');
   }
   if (user.email_verified === false && mailConfigured()) {
@@ -314,7 +331,25 @@ export const refresh = asyncHandler(async (req, res) => {
   const token = readRefreshToken(req);
   if (!token) throw new HttpError(401, 'Sesi tidak ditemukan. Silakan masuk kembali.', { code: 'NO_REFRESH' });
   const row = await refreshTokens.findByHash(sha256(token));
-  if (!row || row.revoked_at || new Date(row.expires_at) < new Date()) {
+  if (!row) {
+    clearRefreshCookie(res);
+    throw new HttpError(401, 'Sesi sudah berakhir. Silakan masuk kembali.', { code: 'REFRESH_INVALID' });
+  }
+  // Refresh token reuse detection (ASVS V3): if an already-revoked refresh token is replayed,
+  // revoke ALL active refresh sessions and bump token_version to invalidate stolen access tokens.
+  if (row.revoked_at) {
+    await refreshTokens.revokeAllForUser(row.user_id);
+    const compromisedUser = await users.findById(row.user_id);
+    if (compromisedUser) {
+      await users.update(compromisedUser.id, { token_version: Number(compromisedUser.token_version || 0) + 1 });
+    }
+    logSecurityEvent('auth_refresh_token_reuse_detected', { user_id: row.user_id, ip: req.ip }, { severity: 'high' });
+    clearRefreshCookie(res);
+    throw new HttpError(401, 'Aktivitas sesi mencurigakan terdeteksi. Semua sesi Anda telah dicabut demi keamanan; silakan masuk kembali.', {
+      code: 'REFRESH_REUSE_DETECTED',
+    });
+  }
+  if (new Date(row.expires_at) < new Date()) {
     clearRefreshCookie(res);
     throw new HttpError(401, 'Sesi sudah berakhir. Silakan masuk kembali.', { code: 'REFRESH_INVALID' });
   }
@@ -364,7 +399,7 @@ export const forgotPassword = asyncHandler(async (req, res) => {
           to: user.email,
           subject: 'Kode OTP & Tautan Reset Kata Sandi Runut',
           text: `Halo ${user.name},\n\nKode OTP reset kata sandi Anda (berlaku 10 menit): ${otp}\n\nAtau gunakan tautan berikut (berlaku 30 menit):\n${link}\n\nJika Anda tidak memintanya, abaikan email ini.`,
-          html: `<p>Halo ${user.name},</p><p>Kode OTP reset kata sandi Anda (berlaku 10 menit):</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${otp}</p><p>Atau klik tautan berikut (berlaku 30 menit):</p><p><a href="${link}">${link}</a></p><p>Jika Anda tidak memintanya, abaikan email ini.</p>`,
+          html: `<p>Halo ${escapeHtml(user.name)},</p><p>Kode OTP reset kata sandi Anda (berlaku 10 menit):</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${escapeHtml(otp)}</p><p>Atau klik tautan berikut (berlaku 30 menit):</p><p><a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p><p>Jika Anda tidak memintanya, abaikan email ini.</p>`,
         });
       } catch (err) {
         console.error(JSON.stringify({ event: 'mail_failed', reason: err.message }));
@@ -400,7 +435,7 @@ export const resetPassword = asyncHandler(async (req, res) => {
   }
 
   await users.update(user.id, {
-    password_hash: await bcrypt.hash(rawPassword, 10),
+    password_hash: await bcrypt.hash(rawPassword, BCRYPT_ROUNDS),
     email_verified: true,
     reset_token_hash: null,
     reset_token_expires_at: null,

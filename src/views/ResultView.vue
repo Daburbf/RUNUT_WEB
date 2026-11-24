@@ -6,6 +6,7 @@ import HighlightedText from '../components/HighlightedText.vue'
 import SuggestionCard from '../components/SuggestionCard.vue'
 import { documents } from '../store/documents'
 import { auth } from '../store/auth'
+import { api, downloadFile } from '../utils/api'
 import { canon, CATEGORIES } from '../utils/categories'
 
 const route = useRoute()
@@ -26,8 +27,123 @@ const notice = ref('')
 const error = ref('')
 const busyId = ref(null)
 const busyAll = ref(false)
+const pendingDownload = ref(null)
 const dlEl = ref(null)
+const reportEl = ref(null)
 const moreEl = ref(null)
+const preservation = ref(null)
+
+const REPORT_COLORS = [
+  { color: 'var(--hl-ai-color)', bg: 'var(--hl-ai-bg)', text: 'var(--hl-ai-text)', label: 'Indikator Gaya AI' },
+  { color: 'var(--hl-strong-color)', bg: 'var(--hl-strong-bg)', text: 'var(--hl-strong-text)', label: 'Kecocokan Kuat Tanpa Sitasi' },
+  { color: 'var(--hl-citation-color)', bg: 'var(--hl-citation-bg)', text: 'var(--hl-citation-text)', label: 'Masalah Sitasi & Pustaka' },
+  { color: 'var(--hl-sim-color)', bg: 'var(--hl-sim-bg)', text: 'var(--hl-sim-text)', label: 'Kemiripan Umum' },
+  { color: 'var(--hl-safe-color)', bg: 'var(--hl-safe-bg)', text: 'var(--hl-safe-text)', label: 'Aman / Kutipan Bersitasi Benar' },
+  { color: 'var(--hl-neutral-color)', bg: 'var(--hl-neutral-bg)', text: 'var(--hl-neutral-text)', label: 'Ungkapan Umum / Dikecualikan' },
+]
+
+function formatThresholdScore(metric) {
+  const pct = Math.max(0, Math.min(100, Math.round(Number(metric?.percent) || 0)))
+  const isAi = metric?.key === 'ai_usage'
+  if (pct === 0) {
+    return {
+      display: '0%',
+      badge: 'Aman',
+      color: 'var(--hl-safe-color)',
+      bg: 'var(--hl-safe-bg)',
+      text: 'var(--hl-safe-text)',
+      note: 'Tidak ditemukan indikator yang memenuhi kriteria deteksi.',
+      safe: true,
+      showPassages: false,
+    }
+  }
+  if (pct < 20) {
+    return {
+      display: '*%',
+      badge: 'Aman (<20%)',
+      color: 'var(--hl-safe-color)',
+      bg: 'var(--hl-safe-bg)',
+      text: 'var(--hl-safe-text)',
+      note: 'Indikasi rendah (<20%) dengan potensi false positive — masih tergolong aman.',
+      safe: true,
+      showPassages: false,
+    }
+  }
+  if (isAi) {
+    return {
+      display: `${pct}%`,
+      badge: 'Indikator Gaya AI',
+      color: 'var(--hl-ai-color)',
+      bg: 'var(--hl-ai-bg)',
+      text: 'var(--hl-ai-text)',
+      note: metric?.note || 'Terdeteksi pola penulisan yang memenuhi kriteria indikator gaya AI (bukan bukti pasti penulisan AI).',
+      safe: false,
+      showPassages: true,
+    }
+  }
+  const strong = pct >= 40
+  return {
+    display: `${pct}%`,
+    badge: strong ? 'Pengulangan Tinggi' : 'Kemiripan Umum',
+    color: strong ? 'var(--hl-strong-color)' : 'var(--hl-sim-color)',
+    bg: strong ? 'var(--hl-strong-bg)' : 'var(--hl-sim-bg)',
+    text: strong ? 'var(--hl-strong-text)' : 'var(--hl-sim-text)',
+    note: metric?.note || 'Terdeteksi pengulangan atau kemiripan teks yang memenuhi kriteria indikator.',
+    safe: false,
+    showPassages: true,
+  }
+}
+
+function signalColor(metricKey, pct) {
+  const n = Math.max(0, Math.round(Number(pct) || 0))
+  if (n < 20) return { color: 'var(--hl-safe-color)', bg: 'var(--hl-safe-bg)', text: 'var(--hl-safe-text)', display: n === 0 ? '0%' : '*%', tag: 'Aman' }
+  if (metricKey === 'ai_usage') return { color: 'var(--hl-ai-color)', bg: 'var(--hl-ai-bg)', text: 'var(--hl-ai-text)', display: `${n}%`, tag: 'Indikator AI' }
+  if (n >= 40) return { color: 'var(--hl-strong-color)', bg: 'var(--hl-strong-bg)', text: 'var(--hl-strong-text)', display: `${n}%`, tag: 'Tinggi' }
+  return { color: 'var(--hl-sim-color)', bg: 'var(--hl-sim-bg)', text: 'var(--hl-sim-text)', display: `${n}%`, tag: 'Sedang' }
+}
+
+function passagesForMetric(metricKey) {
+  if (metricKey === 'similarity') {
+    const out = []
+    for (const p of (stats.value.top_phrases || []).slice(0, 3)) {
+      out.push(`Frasa "${p.phrase}" (${p.count}x)`)
+    }
+    for (const o of (stats.value.repeated_openings || []).slice(0, 2)) {
+      out.push(`Pembuka "${o.opening}" (${o.count}x)`)
+    }
+    for (const w of (stats.value.top_words || []).filter((x) => !x.common && x.count > 2).slice(0, 3)) {
+      out.push(`Kata "${w.word}" (${w.count}x)`)
+    }
+    return out.slice(0, 5)
+  }
+  return issues.value
+    .filter((i) => ['sentence_pattern', 'uniform_structure', 'transition', 'repetition'].includes(i.category))
+    .slice(0, 4)
+    .map((i) => `"${String(i.snippet || '').slice(0, 90)}"`)
+}
+
+async function downloadAnalysisReport(format) {
+  if (!doc.value?.id) return
+  if (reportEl.value) reportEl.value.open = false
+  try {
+    const base = (doc.value.title || 'dokumen').replace(/[^\p{L}\p{N}\- ]+/gu, '').trim().slice(0, 60) || 'dokumen'
+    const ext = format === 'annotated' ? (preservation.value?.format || 'pdf') : format
+    const name = format === 'annotated' ? `${base}-annotated.${ext}` : `${base}-analysis-report.${ext}`
+    await downloadFile(`/api/documents/${doc.value.id}/analysis-report?format=${format}`, name)
+    say(`Laporan analisis (${format.toUpperCase()}) berhasil diunduh.`)
+  } catch (e) {
+    fail(e.message || 'Gagal mengunduh laporan analisis.')
+  }
+}
+
+async function loadPreservation(id = doc.value?.id) {
+  if (!id) return
+  try {
+    preservation.value = await api(`/api/documents/${id}/preservation`)
+  } catch {
+    preservation.value = null
+  }
+}
 
 // Refs untuk animasi sliding pill pada sub-navbar
 const navContainerRef = ref(null)
@@ -74,6 +190,7 @@ async function hydrate(id = route.params.id || draft.value?.document?.id) {
 onMounted(async () => {
   window.addEventListener('resize', updatePillPosition)
   await hydrate()
+  await loadPreservation()
   auth.refreshProfile()
   nextTick(updatePillPosition)
 })
@@ -106,9 +223,7 @@ const tokenCost = computed(() => doc.value?.token_cost || draft.value?.meta?.tok
 const navItems = computed(() => [
   { id: 'tulisan-asli', label: 'Teks Asli', icon: 'fa-file-lines', count: null },
   { id: 'perbaikan', label: 'Perbaikan', icon: 'fa-wand-magic-sparkles', count: appliedIssues.value.length },
-  { id: 'temuan', label: 'Temuan', icon: 'fa-list-check', count: issues.value.length },
   { id: 'ringkasan', label: 'Ringkasan', icon: 'fa-chart-simple', count: null },
-  { id: 'unduh', label: 'Unduh', icon: 'fa-download', count: null },
 ])
 
 watch([activeSection, () => issues.value.length, () => appliedIssues.value.length], () => {
@@ -128,6 +243,9 @@ const scores = computed(() => stats.value.scores || {})
 const scoresList = computed(() => ['similarity', 'ai_usage']
   .map((key) => ({ key, ...(scores.value[key] || {}) }))
   .filter((m) => Number.isFinite(m.percent)))
+const similarityReport = computed(() => stats.value.similarity_report || null)
+const citationReport = computed(() => stats.value.citation_report || null)
+const ocrReport = computed(() => stats.value.ocr_report || null)
 
 const figures = computed(() => [
   { label: 'Kata', value: stats.value.word_count ?? doc.value?.word_count ?? 0 },
@@ -306,14 +424,51 @@ async function download(format) {
   dlEl.value?.removeAttribute('open')
   const bal = Math.max(0, Number(auth.user?.token_balance) || 0)
   if (bal < 1) {
-    fail('Saldo token tidak mencukupi untuk mengunduh dokumen (butuh 1 token). Silakan isi token terlebih dahulu.')
+    fail('Token Anda tidak mencukupi untuk mengunduh file ini. Silakan isi token terlebih dahulu.')
     return
   }
   try {
-    await documents.download(doc.value.id, format, `${doc.value.title}-revisi.${format}`)
-    say(`Dokumen (.${format.toUpperCase()}) berhasil diunduh (-1 token).`)
+    const res = await documents.download(doc.value.id, format, `${doc.value.title}-revisi.${format}`)
+    if (res?.status === 'cancelled') {
+      say(res.message || 'Unduhan dibatalkan. Token Anda tidak dipotong.')
+      return
+    }
+    if (res?.status === 'awaiting_confirmation') {
+      pendingDownload.value = res
+      say(res.message)
+      return
+    }
+    if (res?.status === 'busy') {
+      say(res.message)
+      return
+    }
+    say(`Dokumen (.${format.toUpperCase()}) berhasil disimpan (-1 token).`)
   } catch (e) {
-    fail(e.message)
+    fail(e.message || 'File gagal dibuat. Silakan coba kembali.')
+  }
+}
+
+async function confirmPendingDownload() {
+  if (!pendingDownload.value) return
+  const { documentId, transactionId } = pendingDownload.value
+  try {
+    await documents.confirmDownload(documentId, transactionId)
+    pendingDownload.value = null
+    say('Unduhan dikonfirmasi (-1 token).')
+  } catch (e) {
+    fail(e.message || 'Konfirmasi unduhan belum berhasil. Status transaksi akan diperiksa kembali.')
+  }
+}
+
+async function cancelPendingDownload() {
+  if (!pendingDownload.value) return
+  const { documentId, transactionId } = pendingDownload.value
+  try {
+    const res = await documents.cancelDownload(documentId, transactionId, 'user_cancelled_fallback')
+    pendingDownload.value = null
+    say(res?.message || 'Unduhan dibatalkan. Token Anda tidak dipotong.')
+  } catch (e) {
+    fail(e.message || 'Gagal membatalkan reservasi unduhan.')
   }
 }
 
@@ -343,6 +498,37 @@ async function copyRevised() {
   </section>
 
   <div v-else class="pb-16">
+    <!-- Konfirmasi Penyimpanan Fallback (untuk browser tanpa File System Access API) -->
+    <transition name="fade">
+      <div
+        v-if="pendingDownload"
+        class="fixed bottom-20 right-5 z-50 max-w-md border-2 border-black bg-white p-4 text-black shadow-[4px_4px_0_#000]"
+        role="dialog"
+        aria-label="Konfirmasi penyimpanan unduhan"
+      >
+        <p class="font-mono text-[11px] font-bold uppercase tracking-wider text-[#FF3000]">Konfirmasi Unduhan (1 Token Direservasi)</p>
+        <p class="mt-1.5 text-xs leading-relaxed text-black/80">
+          Berkas <strong>{{ pendingDownload.filename }}</strong> telah dikirim ke browser. Konfirmasi jika berkas berhasil disimpan, atau batalkan agar token tidak dipotong.
+        </p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="swiss-snap border-2 border-black bg-black px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-white hover:border-[#FF3000] hover:bg-[#FF3000]"
+            @click="confirmPendingDownload"
+          >
+            Konfirmasi Tersimpan (-1 Token)
+          </button>
+          <button
+            type="button"
+            class="swiss-snap border-2 border-black bg-white px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-black hover:bg-[#F2F2F2]"
+            @click="cancelPendingDownload"
+          >
+            Batalkan
+          </button>
+        </div>
+      </div>
+    </transition>
+
     <!-- Toast Notifikasi Melayang (Tidak Menggeser Layout / Scroll) -->
     <transition name="fade">
       <div
@@ -444,6 +630,43 @@ async function copyRevised() {
             <i class="fa-solid fa-check-double mr-1"></i>Terapkan Semua
           </button>
 
+          <!-- Dropdown Download Analysis Report -->
+          <details ref="reportEl" class="relative">
+            <summary class="summary-plain swiss-snap flex min-h-[36px] cursor-pointer list-none items-center gap-1.5 border-2 border-black bg-white px-3 py-1 font-mono text-[11px] font-bold uppercase tracking-wider text-black hover:bg-black hover:text-white">
+              <i class="fa-solid fa-file-shield text-[10px] text-[#FF3000]"></i>Download Analysis Report<i class="fa-solid fa-chevron-down text-[9px]"></i>
+            </summary>
+            <div class="absolute right-0 z-40 mt-1 w-56 border-2 border-black bg-white">
+              <div class="border-b border-black/10 bg-[#F2F2F2] px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-black/55">
+                Laporan Analisis Terpisah
+              </div>
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-2 border-b border-black/10 px-3 py-2.5 text-left font-mono text-[11px] font-bold uppercase tracking-wider hover:bg-black hover:text-white"
+                @click="downloadAnalysisReport('pdf')"
+              >
+                <span>PDF Report</span>
+                <i class="fa-regular fa-file-pdf text-[#FF3000]"></i>
+              </button>
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-2 border-b border-black/10 px-3 py-2.5 text-left font-mono text-[11px] font-bold uppercase tracking-wider hover:bg-black hover:text-white"
+                @click="downloadAnalysisReport('docx')"
+              >
+                <span>DOCX Report</span>
+                <i class="fa-regular fa-file-word text-blue-700"></i>
+              </button>
+              <button
+                v-if="preservation?.has_original_file"
+                type="button"
+                class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left font-mono text-[11px] font-bold uppercase tracking-wider hover:bg-black hover:text-white"
+                @click="downloadAnalysisReport('annotated')"
+              >
+                <span>Annotated Original</span>
+                <i class="fa-solid fa-highlighter text-amber-600"></i>
+              </button>
+            </div>
+          </details>
+
           <!-- Dropdown Unduh (1 Token) -->
           <details ref="dlEl" class="relative">
             <summary class="summary-plain swiss-snap flex min-h-[36px] cursor-pointer list-none items-center gap-1.5 border-2 border-black bg-black px-3 py-1 font-mono text-[11px] font-bold uppercase tracking-wider text-white hover:border-[#FF3000] hover:bg-[#FF3000]">
@@ -521,8 +744,17 @@ async function copyRevised() {
       <div class="flex flex-wrap items-center justify-between gap-3 border border-black/15 bg-[#F8F8F8] px-4 py-2.5">
         <div class="flex flex-wrap items-center gap-x-6 gap-y-1 font-mono text-xs uppercase tracking-wider">
           <span v-for="m in scoresList" :key="m.key" class="flex items-center gap-1.5">
+            <span class="h-2.5 w-2.5 shrink-0" :style="{ backgroundColor: formatThresholdScore(m).color }"></span>
             <span class="text-black/55">{{ m.label }}:</span>
-            <strong class="text-sm font-black tabular-nums text-black">{{ m.percent }}%</strong>
+            <strong class="text-sm font-black tabular-nums" :style="{ color: formatThresholdScore(m).color }">
+              {{ formatThresholdScore(m).display }}
+            </strong>
+            <span
+              class="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+              :style="{ backgroundColor: formatThresholdScore(m).bg, color: formatThresholdScore(m).color }"
+            >
+              {{ formatThresholdScore(m).safe ? 'Aman' : 'Tinjau' }}
+            </span>
           </span>
           <span class="hidden text-black/20 sm:inline">|</span>
           <span>
@@ -564,27 +796,160 @@ async function copyRevised() {
 
             <div class="mt-4 grid gap-4 sm:grid-cols-2">
               <div v-for="m in scoresList" :key="m.key" class="border-2 border-black p-4">
-                <div class="flex items-baseline justify-between gap-4">
-                  <p class="font-mono text-xs font-bold uppercase tracking-widest text-black/70">{{ m.label }}</p>
-                  <p class="text-3xl font-black leading-none tabular-nums">{{ m.percent }}<span class="text-base">%</span></p>
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="font-mono text-xs font-bold uppercase tracking-widest text-black/70">{{ m.label }}</p>
+                    <span
+                      class="mt-1 inline-flex items-center gap-1.5 border border-black/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider"
+                      :style="{ backgroundColor: formatThresholdScore(m).bg, color: formatThresholdScore(m).color }"
+                    >
+                      <span class="h-2 w-2 shrink-0" :style="{ backgroundColor: formatThresholdScore(m).color }"></span>
+                      {{ formatThresholdScore(m).badge }}
+                    </span>
+                  </div>
+                  <p class="text-3xl font-black leading-none tabular-nums" :style="{ color: formatThresholdScore(m).color }">
+                    {{ formatThresholdScore(m).display }}
+                  </p>
                 </div>
                 <div class="mt-2.5 h-1.5 w-full bg-black/10" role="progressbar" :aria-label="m.label" :aria-valuenow="bar(m.percent)" aria-valuemin="0" aria-valuemax="100">
-                  <div class="h-full bg-[#FF3000]" :style="{ width: bar(m.percent) + '%' }"></div>
+                  <div class="h-full" :style="{ width: bar(m.percent) + '%', backgroundColor: formatThresholdScore(m).color }"></div>
                 </div>
-                <p class="mt-2 text-xs leading-relaxed text-black/60">{{ m.note }}</p>
+                <p class="mt-2 text-xs leading-relaxed text-black/70">{{ formatThresholdScore(m).note }}</p>
+
+                <!-- Bagian teks yang memenuhi kriteria indikator (hanya ditampilkan bila >= 20%) -->
+                <div v-if="formatThresholdScore(m).showPassages && passagesForMetric(m.key).length" class="mt-2.5 border-l-4 pl-3" :style="{ borderColor: formatThresholdScore(m).color }">
+                  <p class="font-mono text-[10px] font-bold uppercase tracking-wider text-black/60">Bagian teks yang memenuhi kriteria:</p>
+                  <ul class="mt-1 space-y-1 text-xs text-black/80">
+                    <li v-for="(p, idx) in passagesForMetric(m.key)" :key="idx" class="truncate">• {{ p }}</li>
+                  </ul>
+                </div>
+
                 <details v-if="m.signals?.length" class="mt-2.5" open>
                   <summary class="summary-plain inline-flex cursor-pointer items-center gap-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-widest text-black/65 hover:text-black">
                     <i class="fa-solid fa-chevron-down text-[9px] text-[#FF3000]"></i>Rincian analisis
                   </summary>
                   <ul class="mt-2 space-y-2 border-t border-black/10 pt-2">
                     <li v-for="s in m.signals" :key="s.key">
-                      <div class="flex justify-between gap-2 font-mono text-[10px] uppercase tracking-wider text-black/65">
-                        <span class="min-w-0 truncate">{{ s.label }}</span><span class="shrink-0 tabular-nums">{{ s.percent }}%</span>
+                      <div class="flex items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-wider text-black/75">
+                        <span class="flex min-w-0 items-center gap-1.5 truncate">
+                          <span class="h-2 w-2 shrink-0" :style="{ backgroundColor: signalColor(m.key, s.percent).color }"></span>
+                          <span class="truncate">{{ s.label }}</span>
+                        </span>
+                        <span class="flex shrink-0 items-center gap-1.5 tabular-nums font-bold" :style="{ color: signalColor(m.key, s.percent).color }">
+                          <span>{{ signalColor(m.key, s.percent).display }}</span>
+                          <span class="px-1 py-0.5 text-[9px]" :style="{ backgroundColor: signalColor(m.key, s.percent).bg }">
+                            {{ signalColor(m.key, s.percent).tag }}
+                          </span>
+                        </span>
                       </div>
-                      <div class="mt-1 h-1 w-full bg-black/10"><div class="h-full bg-black/55" :style="{ width: bar(s.percent) + '%' }"></div></div>
+                      <div class="mt-1 h-1 w-full bg-black/10">
+                        <div class="h-full" :style="{ width: bar(s.percent) + '%', backgroundColor: signalColor(m.key, s.percent).color }"></div>
+                      </div>
                     </li>
                   </ul>
                 </details>
+              </div>
+            </div>
+
+            <!-- LAPORAN ORISINALITAS, SITASI, & PRESERVASI DOKUMEN -->
+            <div class="mt-4 grid gap-4 lg:grid-cols-3">
+              <!-- Orisinalitas & Kemiripan -->
+              <div v-if="similarityReport" class="border-2 border-black p-4">
+                <p class="font-mono text-xs font-bold uppercase tracking-widest text-[#FF3000]">Orisinalitas & Kemiripan</p>
+                <p class="mt-2 text-xs leading-relaxed text-black/65">{{ similarityReport.scope_note }}</p>
+                <dl class="mt-3 grid grid-cols-2 gap-2 font-mono text-[10px] uppercase">
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Total Temuan</dt>
+                    <dd class="mt-0.5 text-sm font-black">{{ similarityReport.summary?.total_findings ?? 0 }}</dd>
+                  </div>
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Tanpa Sitasi</dt>
+                    <dd class="mt-0.5 text-sm font-black text-[#FF3000]">{{ similarityReport.summary?.unattributed_overlaps ?? 0 }}</dd>
+                  </div>
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Parafrase Dekat</dt>
+                    <dd class="mt-0.5 text-sm font-black">{{ similarityReport.summary?.close_paraphrases ?? 0 }}</dd>
+                  </div>
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Kutipan Langsung</dt>
+                    <dd class="mt-0.5 text-sm font-black">{{ similarityReport.summary?.direct_quotations ?? 0 }}</dd>
+                  </div>
+                </dl>
+                <ul v-if="similarityReport.findings?.length" class="mt-3 max-h-40 space-y-2 overflow-y-auto border-t border-black/10 pt-2 text-xs">
+                  <li v-for="(f, idx) in similarityReport.findings.slice(0, 5)" :key="idx" class="border-l-2 border-black pl-2">
+                    <p class="font-mono text-[10px] font-bold uppercase text-black/60">{{ f.category }} · {{ f.source_info }}</p>
+                    <p class="mt-0.5 text-black/85">{{ f.explanation }}</p>
+                  </li>
+                </ul>
+              </div>
+
+              <!-- Validasi Sitasi & Daftar Pustaka -->
+              <div v-if="citationReport" class="border-2 border-black p-4">
+                <p class="font-mono text-xs font-bold uppercase tracking-widest text-[#FF3000]">Sitasi & Daftar Pustaka</p>
+                <dl class="mt-3 grid grid-cols-2 gap-2 font-mono text-[10px] uppercase">
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Gaya Terdeteksi</dt>
+                    <dd class="mt-0.5 text-sm font-black">{{ citationReport.detected_style }}</dd>
+                  </div>
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Sitasi / Pustaka</dt>
+                    <dd class="mt-0.5 text-sm font-black">{{ citationReport.in_text_count }} / {{ citationReport.bibliography_count }}</dd>
+                  </div>
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Pustaka Hilang</dt>
+                    <dd class="mt-0.5 text-sm font-black text-[#FF3000]">{{ citationReport.missing_references?.length ?? 0 }}</dd>
+                  </div>
+                  <div class="border border-black/15 bg-[#F8F8F8] p-2">
+                    <dt class="text-black/50">Tidak Dikutip / Duplikat</dt>
+                    <dd class="mt-0.5 text-sm font-black">{{ (citationReport.unused_references?.length ?? 0) + (citationReport.duplicate_references?.length ?? 0) }}</dd>
+                  </div>
+                </dl>
+                <p class="mt-2.5 text-xs text-black/65">
+                  <i class="fa-solid fa-shield-halved mr-1 text-black"></i>
+                  Bagian Daftar Pustaka dilindungi dari penulisan ulang otomatis.
+                </p>
+              </div>
+
+              <!-- Status Preservasi Dokumen -->
+              <div class="border-2 border-black p-4">
+                <p class="font-mono text-xs font-bold uppercase tracking-widest text-[#FF3000]">Preservasi Dokumen</p>
+                <p v-if="preservation" class="mt-2 text-xs leading-relaxed text-black/70">{{ preservation.note }}</p>
+                <ul v-if="preservation?.checks" class="mt-3 space-y-1.5 font-mono text-[10px] uppercase">
+                  <li v-for="(ok, key) in preservation.checks" :key="key" class="flex items-center justify-between border-b border-black/10 pb-1">
+                    <span class="text-black/70">{{ key.replace(/_/g, ' ') }}</span>
+                    <span :class="ok ? 'font-bold text-green-700' : 'font-bold text-[#FF3000]'">
+                      {{ ok ? 'TERVERIFIKASI' : 'TIDAK DIKONFIRMASI' }}
+                    </span>
+                  </li>
+                </ul>
+                <p v-else class="mt-2 text-xs text-black/50">
+                  Unggah berkas .DOCX asli untuk preservasi tata letak, font, tabel, gambar, dan header/footer secara utuh.
+                </p>
+                <div v-if="ocrReport?.ocr_applied" class="mt-3 border-t border-black/15 pt-2.5 text-xs">
+                  <p class="font-mono text-[10px] font-bold uppercase tracking-widest text-black/70">
+                    OCR PDF Pindai ({{ ocrReport.language }}) · Keyakinan {{ ocrReport.average_confidence }}%
+                  </p>
+                  <p v-if="ocrReport.needs_user_verification" class="mt-1 text-[#FF3000]">
+                    <i class="fa-solid fa-triangle-exclamation mr-1"></i>
+                    {{ ocrReport.uncertain_segments?.length || 0 }} baris hasil OCR memiliki keyakinan rendah — periksa angka, nama, dan istilah teknis secara manual.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Warna Laporan Analisis -->
+            <div class="mt-4 border border-black/20 bg-[#FAFAFA] p-3.5">
+              <p class="font-mono text-[10px] font-bold uppercase tracking-widest text-black/65">Warna Laporan Analisis</p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <span
+                  v-for="item in REPORT_COLORS"
+                  :key="item.label"
+                  class="inline-flex items-center gap-1.5 border border-black/15 px-2 py-1 font-mono text-[10px] font-bold uppercase"
+                  :style="{ backgroundColor: item.bg, color: item.text }"
+                >
+                  <span class="h-2 w-2 shrink-0" :style="{ backgroundColor: item.color }"></span>
+                  {{ item.label }}
+                </span>
               </div>
             </div>
           </div>
@@ -629,10 +994,7 @@ async function copyRevised() {
         <!-- Kolom Kiri: Pembaca Dokumen (Teks Asli Bersorotan / Hasil Perbaikan) -->
         <div
           id="tulisan-asli"
-          :class="[
-            pane === 'doc' ? 'flex' : 'hidden lg:flex',
-            'scroll-mt-32 min-w-0 flex-col border border-black/25 bg-white lg:sticky lg:top-[7.75rem] lg:h-[calc(100vh-8.75rem)] lg:min-h-[540px]',
-          ]"
+          class="scroll-mt-32 flex min-w-0 flex-col border border-black/25 bg-white lg:sticky lg:top-[7.75rem] lg:h-[calc(100vh-8.75rem)] lg:min-h-[540px]"
         >
           <div id="perbaikan" class="flex flex-wrap items-center justify-between gap-2 border-b border-black/15 bg-[#F8F8F8] px-4 py-2.5">
             <div class="flex items-center gap-2">
@@ -660,7 +1022,7 @@ async function copyRevised() {
               <div class="mx-auto max-w-[84ch]">
                 <transition name="view-slide" mode="out-in">
                   <div v-if="tab === 'asli'" key="asli">
-                    <HighlightedText :text="doc.original_text" :issues="issues" :selected="selected" @pick="pickFromDoc" />
+                    <HighlightedText :text="doc.original_text" :issues="issues" :stats="stats" :selected="selected" @pick="pickFromDoc" />
                   </div>
                   <div v-else key="perbaikan">
                     <pre class="whitespace-pre-wrap break-words font-sans text-[16px] leading-[1.9] text-black">{{ revised }}</pre>
@@ -686,8 +1048,7 @@ async function copyRevised() {
         <aside
           id="temuan"
           :class="[
-            pane === 'temuan' ? 'flex' : 'hidden lg:flex',
-            'scroll-mt-32 min-w-0 flex-col border bg-white transition-colors duration-300 lg:sticky lg:top-[7.75rem] lg:h-[calc(100vh-8.75rem)] lg:min-h-[540px]',
+            'scroll-mt-32 flex min-w-0 flex-col border bg-white transition-colors duration-300 lg:sticky lg:top-[7.75rem] lg:h-[calc(100vh-8.75rem)] lg:min-h-[540px]',
             temuanPulse ? 'border-2 border-[#FF3000]' : 'border-black/25',
           ]"
         >

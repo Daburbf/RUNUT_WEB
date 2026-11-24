@@ -1,174 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { runMigrations, getSchemaVersion } from './migrations.js';
 
 const { Pool } = pg;
 
-// Skema dan migrasi aman (non-destruktif) untuk sistem token.
-// Kolom lama (is_premium, premium_until, premium_days) dipertahankan untuk
-// kompatibilitas mundur tanpa menghapus data yang sudah ada.
-export const SCHEMA = `
-create table if not exists users (
-  id uuid primary key,
-  name text not null,
-  email text not null,
-  password_hash text,
-  token_balance integer not null default 0,
-  email_verified boolean not null default true,
-  google_id text,
-  auth_provider text not null default 'local',
-  is_premium boolean not null default false,
-  premium_until timestamptz,
-  reset_token_hash text,
-  reset_token_expires_at timestamptz,
-  otp_code_hash text,
-  otp_purpose text,
-  otp_expires_at timestamptz,
-  otp_attempts integer not null default 0,
-  otp_sent_at timestamptz,
-  token_version integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-alter table users alter column password_hash drop not null;
-alter table users add column if not exists token_balance integer not null default 0;
-alter table users add column if not exists email_verified boolean not null default true;
-alter table users add column if not exists google_id text;
-alter table users add column if not exists auth_provider text not null default 'local';
-alter table users add column if not exists otp_code_hash text;
-alter table users add column if not exists otp_purpose text;
-alter table users add column if not exists otp_expires_at timestamptz;
-alter table users add column if not exists otp_attempts integer not null default 0;
-alter table users add column if not exists otp_sent_at timestamptz;
-alter table users add column if not exists token_version integer not null default 0;
-create unique index if not exists users_email_key on users (lower(email));
-create unique index if not exists users_google_id_key on users (google_id) where google_id is not null;
-
-create table if not exists token_transactions (
-  id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
-  type text not null,
-  amount integer not null,
-  balance_after integer not null,
-  description text not null,
-  reference_type text,
-  reference_id text,
-  idempotency_key text,
-  meta jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
-);
-create index if not exists token_transactions_user_idx on token_transactions (user_id, created_at desc);
-create unique index if not exists token_transactions_idempotency_idx
-  on token_transactions (user_id, idempotency_key)
-  where idempotency_key is not null;
-
-create table if not exists documents (
-  id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
-  title text not null,
-  original_text text not null,
-  revised_text text,
-  word_count integer not null default 0,
-  token_cost integer not null default 0,
-  file_name text,
-  status text not null default 'analyzed',
-  expires_at timestamptz,
-  last_analyzed_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-alter table documents add column if not exists token_cost integer not null default 0;
-create index if not exists documents_user_updated_idx on documents (user_id, updated_at desc);
-
-create table if not exists analysis_results (
-  id uuid primary key,
-  document_id uuid not null references documents(id) on delete cascade,
-  stats jsonb not null default '{}'::jsonb,
-  locked boolean not null default false,
-  token_cost integer not null default 0,
-  idempotency_key text,
-  ai_provider text,
-  ai_model text,
-  ai_latency_ms integer,
-  ai_status text,
-  created_at timestamptz not null default now()
-);
-alter table analysis_results add column if not exists token_cost integer not null default 0;
-alter table analysis_results add column if not exists idempotency_key text;
-create index if not exists analysis_results_document_idx on analysis_results (document_id, created_at desc);
-
-create table if not exists issues (
-  id uuid primary key,
-  analysis_id uuid not null references analysis_results(id) on delete cascade,
-  category text not null,
-  start_pos integer not null default 0,
-  end_pos integer not null default 0,
-  snippet text,
-  explanation text,
-  suggestion text,
-  needs_manual_review boolean not null default false,
-  review_reasons jsonb not null default '[]'::jsonb,
-  evidence jsonb,
-  decision text not null default 'active',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create index if not exists issues_analysis_idx on issues (analysis_id, start_pos);
-
-create table if not exists payments (
-  id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
-  order_id text not null,
-  package_id text,
-  package_label text,
-  token_amount integer not null default 0,
-  method text not null,
-  method_label text,
-  channel text,
-  amount integer not null,
-  status text not null default 'pending',
-  provider text,
-  provider_ref text,
-  instructions jsonb not null default '{}'::jsonb,
-  premium_days integer not null default 30,
-  expires_at timestamptz,
-  paid_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-alter table payments add column if not exists order_id text;
-alter table payments add column if not exists package_id text;
-alter table payments add column if not exists package_label text;
-alter table payments add column if not exists token_amount integer not null default 0;
-alter table payments add column if not exists method text;
-alter table payments add column if not exists method_label text;
-alter table payments add column if not exists channel text;
-alter table payments add column if not exists provider text;
-alter table payments add column if not exists instructions jsonb not null default '{}'::jsonb;
-alter table payments add column if not exists premium_days integer not null default 30;
-alter table payments add column if not exists expires_at timestamptz;
-alter table payments add column if not exists paid_at timestamptz;
-create unique index if not exists payments_order_id_key on payments (order_id);
-create index if not exists payments_user_idx on payments (user_id, created_at desc);
-
-create table if not exists refresh_tokens (
-  id uuid primary key,
-  user_id uuid not null references users(id) on delete cascade,
-  token_hash text not null,
-  expires_at timestamptz not null,
-  user_agent text,
-  revoked_at timestamptz,
-  created_at timestamptz not null default now()
-);
-create index if not exists refresh_tokens_token_hash_idx on refresh_tokens (token_hash);
-create index if not exists refresh_tokens_user_id_idx on refresh_tokens (user_id);
-`;
-
-const USER_COLUMNS = new Set([
+export const USER_COLUMNS = new Set([
   'name', 'email', 'password_hash', 'email_verified', 'google_id', 'auth_provider',
-  'is_premium', 'premium_until', 'reset_token_hash', 'reset_token_expires_at',
+  'reset_token_hash', 'reset_token_expires_at',
   'otp_code_hash', 'otp_purpose', 'otp_expires_at', 'otp_attempts', 'otp_sent_at',
+  'token_version',
 ]);
-const DOCUMENT_COLUMNS = new Set([
+
+export const DOCUMENT_COLUMNS = new Set([
   'title', 'original_text', 'revised_text', 'word_count', 'token_cost', 'file_name',
   'status', 'expires_at', 'last_analyzed_at',
 ]);
@@ -185,20 +28,61 @@ const setClause = (patch, allowed, firstIndex = 2) => {
   };
 };
 
+export function resolveSslOption(connectionString, env = process.env) {
+  const explicit = String(env.DATABASE_SSL || '').trim().toLowerCase();
+  if (explicit === 'false' || explicit === '0' || explicit === 'disable') return false;
+
+  const rejectUnauthorized = String(env.DATABASE_SSL_REJECT_UNAUTHORIZED || 'false').trim().toLowerCase() === 'true';
+  if (explicit === 'true' || explicit === '1' || explicit === 'require') {
+    return { rejectUnauthorized };
+  }
+
+  try {
+    const parsed = new URL(connectionString);
+    const sslMode = (parsed.searchParams.get('sslmode') || '').toLowerCase();
+    if (sslMode === 'disable') return false;
+    if (sslMode === 'require' || sslMode === 'verify-ca' || sslMode === 'verify-full') {
+      return { rejectUnauthorized: sslMode !== 'require' || rejectUnauthorized };
+    }
+    const isLocalHost = parsed.hostname === 'localhost'
+      || parsed.hostname === '127.0.0.1'
+      || parsed.hostname === '::1';
+    if (!isLocalHost && env.NODE_ENV === 'production') {
+      return { rejectUnauthorized };
+    }
+  } catch {
+    // Biarkan pg memvalidasi connectionString
+  }
+  return false;
+}
+
 export async function createPostgresRepositories(connectionString) {
+  const poolMax = Math.max(2, Math.min(Number(process.env.PG_POOL_MAX || 10), 50));
+  const idleTimeoutMillis = Math.max(5000, Number(process.env.PG_IDLE_TIMEOUT_MS || 30000));
+  const connectionTimeoutMillis = Math.max(2000, Number(process.env.PG_CONNECTION_TIMEOUT_MS || 10000));
+  const statementTimeoutMs = Math.max(5000, Number(process.env.PG_STATEMENT_TIMEOUT_MS || 15000));
+
   const pool = new Pool({
     connectionString,
-    max: 5,
-    connectionTimeoutMillis: 3000,
-    idleTimeoutMillis: 10000,
+    max: poolMax,
+    idleTimeoutMillis,
+    connectionTimeoutMillis,
+    query_timeout: statementTimeoutMs,
+    statement_timeout: statementTimeoutMs,
+    allowExitOnIdle: process.env.NODE_ENV === 'test',
+    ssl: resolveSslOption(connectionString),
   });
-  pool.on('error', (err) => console.error(JSON.stringify({ event: 'pg_pool_error', reason: err.message })));
+
+  pool.on('error', (err) => {
+    console.error(JSON.stringify({ event: 'pg_pool_error', reason: err.message }));
+  });
+
+  let schemaVersion = 0;
   try {
-    const client = await pool.connect();
-    try {
-      await client.query(SCHEMA);
-    } finally {
-      client.release();
+    const mig = await runMigrations(pool);
+    schemaVersion = mig.latestVersion;
+    if (mig.newlyApplied.length) {
+      console.log(JSON.stringify({ event: 'pg_migrations_applied', versions: mig.newlyApplied }));
     }
   } catch (err) {
     await pool.end().catch(() => {});
@@ -219,19 +103,20 @@ export async function createPostgresRepositories(connectionString) {
       otp_expires_at = null,
       otp_attempts = 0,
       otp_sent_at = null,
+      token_version = 0,
     }) {
       const bal = Math.max(0, Math.trunc(Number(token_balance) || 0));
       const { rows } = await pool.query(
         `insert into users (
            id, name, email, password_hash, token_balance, email_verified,
            google_id, auth_provider, otp_code_hash, otp_purpose, otp_expires_at,
-           otp_attempts, otp_sent_at
+           otp_attempts, otp_sent_at, token_version
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning *`,
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) returning *`,
         [
           randomUUID(), name, email, password_hash, bal, Boolean(email_verified),
           google_id, auth_provider, otp_code_hash, otp_purpose, otp_expires_at,
-          Number(otp_attempts) || 0, otp_sent_at,
+          Number(otp_attempts) || 0, otp_sent_at, Math.max(0, Math.trunc(Number(token_version) || 0)),
         ],
       );
       return rows[0];
@@ -257,6 +142,7 @@ export async function createPostgresRepositories(connectionString) {
       return rows[0] || null;
     },
     async findByResetTokenHash(hash) {
+      if (!hash) return null;
       const { rows } = await pool.query(
         'select * from users where reset_token_hash = $1 limit 1',
         [hash],
@@ -270,18 +156,6 @@ export async function createPostgresRepositories(connectionString) {
       const { rows } = await pool.query(
         `update users set ${set}, updated_at = now() where id = $1 returning *`,
         [id, ...values],
-      );
-      return rows[0] || null;
-    },
-    async extendPremium(id, days) {
-      if (!isUuid(id)) return null;
-      const { rows } = await pool.query(
-        `update users set
-           is_premium = true,
-           premium_until = greatest(coalesce(premium_until, now()), now()) + ($2 || ' days')::interval,
-           updated_at = now()
-         where id = $1 returning *`,
-        [id, String(Number(days) || 0)],
       );
       return rows[0] || null;
     },
@@ -498,7 +372,7 @@ export async function createPostgresRepositories(connectionString) {
 
     async summaryByUser(user_id) {
       if (!isUuid(user_id)) {
-        return { balance: 0, total_purchased: 0, total_used: 0, gross_used: 0, total_refunded: 0 };
+        return { balance: 0, available_balance: 0, reserved_tokens: 0, total_purchased: 0, total_used: 0, gross_used: 0, total_refunded: 0 };
       }
       const { rows: uRows } = await pool.query('select token_balance from users where id = $1', [user_id]);
       const { rows: sRows } = await pool.query(
@@ -510,9 +384,21 @@ export async function createPostgresRepositories(connectionString) {
          where user_id = $1`,
         [user_id],
       );
+      const { rows: rRows } = await pool.query(
+        `select coalesce(sum(reserved_tokens), 0)::int as reserved_tokens
+           from download_transactions
+          where user_id = $1
+            and state in ('pending', 'reserved', 'file_prepared', 'save_confirmed')
+            and expires_at > now()`,
+        [user_id],
+      );
       const s = sRows[0] || { total_purchased: 0, gross_used: 0, total_refunded: 0 };
+      const balance = Math.max(0, Number(uRows[0]?.token_balance) || 0);
+      const reserved = Math.max(0, Number(rRows[0]?.reserved_tokens) || 0);
       return {
-        balance: Math.max(0, Number(uRows[0]?.token_balance) || 0),
+        balance,
+        reserved_tokens: reserved,
+        available_balance: Math.max(0, balance - reserved),
         total_purchased: s.total_purchased,
         total_used: Math.max(0, s.gross_used - s.total_refunded),
         gross_used: s.gross_used,
@@ -554,6 +440,15 @@ export async function createPostgresRepositories(connectionString) {
         'update refresh_tokens set revoked_at = now() where user_id = $1 and revoked_at is null',
         [user_id],
       );
+    },
+    async deleteExpired(at = new Date().toISOString()) {
+      const { rowCount } = await pool.query(
+        `delete from refresh_tokens
+          where expires_at < $1
+             or (revoked_at is not null and revoked_at < $1::timestamptz - interval '7 days')`,
+        [new Date(at)],
+      );
+      return rowCount || 0;
     },
   };
 
@@ -620,7 +515,7 @@ export async function createPostgresRepositories(connectionString) {
         'delete from documents where expires_at is not null and expires_at < $1 returning id',
         [new Date(at)],
       );
-      return rows.length;
+      return rows.map((r) => r.id);
     },
   };
 
@@ -628,11 +523,11 @@ export async function createPostgresRepositories(connectionString) {
     async create(row) {
       const { rows } = await pool.query(
         `insert into analysis_results
-           (id, document_id, stats, locked, token_cost, idempotency_key, ai_provider, ai_model, ai_latency_ms, ai_status)
-         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
+           (id, document_id, stats, token_cost, idempotency_key, ai_provider, ai_model, ai_latency_ms, ai_status)
+         values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)
          returning *`,
         [
-          randomUUID(), row.document_id, JSON.stringify(row.stats || {}), Boolean(row.locked),
+          randomUUID(), row.document_id, JSON.stringify(row.stats || {}),
           Math.max(0, Math.trunc(Number(row.token_cost) || 0)), row.idempotency_key || null,
           row.ai_provider || null, row.ai_model || null,
           Number.isFinite(row.ai_latency_ms) ? row.ai_latency_ms : null, row.ai_status || null,
@@ -654,34 +549,39 @@ export async function createPostgresRepositories(connectionString) {
     async createMany(rows) {
       const list = Array.isArray(rows) ? rows : [];
       if (!list.length) return [];
-      const client = await pool.connect();
-      try {
-        await client.query('begin');
-        const stored = [];
-        for (const r of list) {
-          const { rows: inserted } = await client.query(
-            `insert into issues
-               (id, analysis_id, category, start_pos, end_pos, snippet, explanation, suggestion,
-                needs_manual_review, review_reasons, evidence, decision)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)
-             returning *`,
-            [
-              randomUUID(), r.analysis_id, r.category, r.start_pos || 0, r.end_pos || 0,
-              r.snippet || null, r.explanation || null, r.suggestion || null,
-              Boolean(r.needs_manual_review), JSON.stringify(r.review_reasons || []),
-              r.evidence ? JSON.stringify(r.evidence) : null, r.decision || 'active',
-            ],
-          );
-          stored.push(inserted[0]);
-        }
-        await client.query('commit');
-        return stored;
-      } catch (err) {
-        await client.query('rollback').catch(() => {});
-        throw err;
-      } finally {
-        client.release();
+      const values = [];
+      const placeholders = [];
+      let p = 1;
+      for (const r of list) {
+        const startPos = Math.max(0, Math.trunc(Number(r.start_pos) || 0));
+        const endPos = Math.max(startPos, Math.trunc(Number(r.end_pos) || startPos));
+        placeholders.push(
+          `($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}::jsonb, $${p++}::jsonb, $${p++})`,
+        );
+        values.push(
+          randomUUID(),
+          r.analysis_id,
+          r.category,
+          startPos,
+          endPos,
+          r.snippet || null,
+          r.explanation || null,
+          r.suggestion || null,
+          Boolean(r.needs_manual_review),
+          JSON.stringify(r.review_reasons || []),
+          r.evidence ? JSON.stringify(r.evidence) : null,
+          r.decision || 'active',
+        );
       }
+      const { rows: inserted } = await pool.query(
+        `insert into issues
+           (id, analysis_id, category, start_pos, end_pos, snippet, explanation, suggestion,
+            needs_manual_review, review_reasons, evidence, decision)
+         values ${placeholders.join(', ')}
+         returning *`,
+        values,
+      );
+      return inserted;
     },
     async listByAnalysis(analysis_id) {
       if (!isUuid(analysis_id)) return [];
@@ -694,9 +594,16 @@ export async function createPostgresRepositories(connectionString) {
     async countPendingByDocument(document_id) {
       if (!isUuid(document_id)) return 0;
       const { rows } = await pool.query(
-        `select count(*)::int as total from issues i
-           join analysis_results a on a.id = i.analysis_id
-          where a.document_id = $1 and i.decision = 'active'`,
+        `select count(*)::int as total
+           from issues i
+          where i.analysis_id = (
+            select a.id
+              from analysis_results a
+             where a.document_id = $1
+             order by a.created_at desc, a.id desc
+             limit 1
+          )
+            and i.decision = 'active'`,
         [document_id],
       );
       return rows[0]?.total || 0;
@@ -726,7 +633,7 @@ export async function createPostgresRepositories(connectionString) {
       const { rows } = await pool.query(
         `insert into payments
            (id, user_id, order_id, package_id, package_label, token_amount, method, method_label,
-            channel, amount, status, provider, provider_ref, instructions, premium_days, expires_at)
+            channel, amount, status, provider, provider_ref, instructions, expires_at, replaces_order_id)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16)
          returning *`,
         [
@@ -734,8 +641,9 @@ export async function createPostgresRepositories(connectionString) {
           Math.max(0, Math.trunc(Number(row.token_amount) || 0)),
           row.method, row.method_label || null, row.channel || null, row.amount,
           row.status || 'pending', row.provider || null, row.provider_ref || null,
-          JSON.stringify(row.instructions || {}), row.premium_days || 0,
+          JSON.stringify(row.instructions || {}),
           row.expires_at ? new Date(row.expires_at) : null,
+          row.replaces_order_id || null,
         ],
       );
       return rows[0];
@@ -759,7 +667,10 @@ export async function createPostgresRepositories(connectionString) {
     },
     async update(id, patch) {
       if (!isUuid(id)) return null;
-      const allowed = new Set(['status', 'provider_ref', 'instructions', 'paid_at', 'expires_at']);
+      const allowed = new Set([
+        'status', 'provider_ref', 'instructions', 'paid_at', 'expires_at',
+        'last_webhook_at', 'replaced_by_order_id', 'replaces_order_id', 'reconciliation_flag',
+      ]);
       const keys = Object.keys(patch || {}).filter((k) => allowed.has(k));
       if (!keys.length) return null;
       const values = keys.map((k) => (k === 'instructions' ? JSON.stringify(patch[k]) : patch[k]));
@@ -782,6 +693,358 @@ export async function createPostgresRepositories(connectionString) {
     },
   };
 
+  const downloadTransactions = {
+    async reserve({
+      user_id,
+      document_id,
+      export_format,
+      reserved_tokens,
+      idempotency_key = null,
+      ttl_seconds = 300,
+    }) {
+      if (!isUuid(user_id) || !isUuid(document_id)) return { ok: false, error: 'INVALID_ID' };
+      const cost = Math.max(0, Math.trunc(Number(reserved_tokens) || 0));
+      const idemKey = idempotency_key ? String(idempotency_key).trim().slice(0, 128) : null;
+      const ttl = Math.max(30, Math.min(Number(ttl_seconds) || 300, 3600));
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        // Row-level lock pada user agar reservasi paralel selalu atomik
+        const { rows: uRows } = await client.query('select * from users where id = $1 for update', [user_id]);
+        if (!uRows[0]) {
+          await client.query('rollback');
+          return { ok: false, error: 'USER_NOT_FOUND' };
+        }
+        const user = uRows[0];
+
+        // Lepaskan reservasi kedaluwarsa milik user ini
+        await client.query(
+          `update download_transactions
+              set state = 'expired', updated_at = now()
+            where user_id = $1
+              and state in ('pending', 'reserved', 'file_prepared')
+              and expires_at <= now()`,
+          [user_id],
+        );
+
+        if (idemKey) {
+          const { rows: existing } = await client.query(
+            'select * from download_transactions where user_id = $1 and idempotency_key = $2 limit 1',
+            [user_id, idemKey],
+          );
+          if (existing[0]) {
+            const { rows: rRows } = await client.query(
+              `select coalesce(sum(reserved_tokens), 0)::int as reserved
+                 from download_transactions
+                where user_id = $1 and state in ('pending', 'reserved', 'file_prepared', 'save_confirmed') and expires_at > now()`,
+              [user_id],
+            );
+            const reserved = rRows[0]?.reserved || 0;
+            await client.query('commit');
+            return {
+              ok: true,
+              duplicate: true,
+              transaction: existing[0],
+              balance: user.token_balance,
+              reserved_tokens: reserved,
+              available_balance: Math.max(0, user.token_balance - reserved),
+            };
+          }
+        }
+
+        const { rows: rRows } = await client.query(
+          `select coalesce(sum(reserved_tokens), 0)::int as reserved
+             from download_transactions
+            where user_id = $1 and state in ('pending', 'reserved', 'file_prepared', 'save_confirmed') and expires_at > now()`,
+          [user_id],
+        );
+        const currentReserved = rRows[0]?.reserved || 0;
+        const available = Math.max(0, user.token_balance - currentReserved);
+        if (available < cost) {
+          await client.query('rollback');
+          return {
+            ok: false,
+            error: 'INSUFFICIENT_TOKENS',
+            balance: user.token_balance,
+            reserved_tokens: currentReserved,
+            available_balance: available,
+            required: cost,
+          };
+        }
+
+        const expiresAt = new Date(Date.now() + ttl * 1000);
+        const { rows: txRows } = await client.query(
+          `insert into download_transactions
+             (id, user_id, document_id, export_format, reserved_tokens, committed_tokens, state, idempotency_key, refund_status, expires_at)
+           values ($1, $2, $3, $4, $5, 0, 'reserved', $6, 'none', $7)
+           returning *`,
+          [randomUUID(), user_id, document_id, export_format, cost, idemKey, expiresAt],
+        );
+        await client.query('commit');
+        const nextReserved = currentReserved + cost;
+        return {
+          ok: true,
+          duplicate: false,
+          transaction: txRows[0],
+          balance: user.token_balance,
+          reserved_tokens: nextReserved,
+          available_balance: Math.max(0, user.token_balance - nextReserved),
+        };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async findById(id) {
+      if (!isUuid(id)) return null;
+      const { rows } = await pool.query('select * from download_transactions where id = $1', [id]);
+      return rows[0] || null;
+    },
+
+    async markPrepared(id, user_id) {
+      if (!isUuid(id) || !isUuid(user_id)) return null;
+      const { rows } = await pool.query(
+        `update download_transactions
+            set state = 'file_prepared', updated_at = now()
+          where id = $1 and user_id = $2 and state in ('reserved', 'file_prepared') and expires_at > now()
+          returning *`,
+        [id, user_id],
+      );
+      return rows[0] || null;
+    },
+
+    async markFailed(id, user_id, reason) {
+      if (!isUuid(id) || !isUuid(user_id)) return null;
+      const { rows } = await pool.query(
+        `update download_transactions
+            set state = 'failed', failure_reason = $3, updated_at = now()
+          where id = $1 and user_id = $2 and state in ('pending', 'reserved', 'file_prepared')
+          returning *`,
+        [id, user_id, String(reason || 'File generation failed').slice(0, 500)],
+      );
+      return rows[0] || null;
+    },
+
+    async cancel(id, user_id, reason = 'user_cancelled') {
+      if (!isUuid(id) || !isUuid(user_id)) return { ok: false, error: 'NOT_FOUND' };
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows } = await client.query(
+          'select * from download_transactions where id = $1 and user_id = $2 for update',
+          [id, user_id],
+        );
+        const tx = rows[0];
+        if (!tx) {
+          await client.query('rollback');
+          return { ok: false, error: 'NOT_FOUND' };
+        }
+        if (tx.state === 'committed') {
+          await client.query('rollback');
+          return { ok: false, error: 'ALREADY_COMMITTED', transaction: tx };
+        }
+        if (tx.state === 'cancelled' || tx.state === 'expired' || tx.state === 'failed') {
+          await client.query('commit');
+          return { ok: true, duplicate: true, transaction: tx };
+        }
+        const { rows: updated } = await client.query(
+          `update download_transactions
+              set state = 'cancelled', cancellation_reason = $3, updated_at = now()
+            where id = $1 and user_id = $2
+            returning *`,
+          [id, user_id, String(reason || 'user_cancelled').slice(0, 300)],
+        );
+        await client.query('commit');
+        return { ok: true, duplicate: false, transaction: updated[0] };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async commit({ id, user_id, description = 'Unduh dokumen', meta = {} }) {
+      if (!isUuid(id) || !isUuid(user_id)) return { ok: false, error: 'NOT_FOUND' };
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rows: uRows } = await client.query('select * from users where id = $1 for update', [user_id]);
+        if (!uRows[0]) {
+          await client.query('rollback');
+          return { ok: false, error: 'USER_NOT_FOUND' };
+        }
+        const { rows: txRows } = await client.query(
+          'select * from download_transactions where id = $1 and user_id = $2 for update',
+          [id, user_id],
+        );
+        const tx = txRows[0];
+        if (!tx) {
+          await client.query('rollback');
+          return { ok: false, error: 'NOT_FOUND' };
+        }
+        if (tx.state === 'committed') {
+          await client.query('commit');
+          return { ok: true, duplicate: true, transaction: tx, balance: uRows[0].token_balance };
+        }
+        if (!['reserved', 'file_prepared', 'save_confirmed'].includes(tx.state)) {
+          await client.query('rollback');
+          return { ok: false, error: 'RESERVATION_NOT_COMMITTABLE', state: tx.state, transaction: tx };
+        }
+        if (new Date(tx.expires_at).getTime() <= Date.now()) {
+          await client.query("update download_transactions set state = 'expired', updated_at = now() where id = $1", [id]);
+          await client.query('commit');
+          return { ok: false, error: 'RESERVATION_EXPIRED', state: 'expired' };
+        }
+
+        const cost = Math.max(0, Math.trunc(Number(tx.reserved_tokens) || 0));
+        const { rows: updatedUser } = await client.query(
+          `update users set token_balance = token_balance - $2, updated_at = now()
+            where id = $1 and token_balance >= $2
+            returning *`,
+          [user_id, cost],
+        );
+        if (!updatedUser[0]) {
+          await client.query("update download_transactions set state = 'failed', failure_reason = 'INSUFFICIENT_TOKENS', updated_at = now() where id = $1", [id]);
+          await client.query('commit');
+          return { ok: false, error: 'INSUFFICIENT_TOKENS', balance: uRows[0].token_balance };
+        }
+
+        let ledgerTx = null;
+        if (cost > 0) {
+          const { rows: lRows } = await client.query(
+            `insert into token_transactions
+               (id, user_id, type, amount, balance_after, description, reference_type, reference_id, idempotency_key, meta)
+             values ($1, $2, 'usage', $3, $4, $5, 'download', $6, $7, $8::jsonb)
+             returning *`,
+            [
+              randomUUID(), user_id, -cost, updatedUser[0].token_balance,
+              String(description || 'Unduh dokumen'), tx.document_id, `download_commit:${tx.id}`,
+              JSON.stringify({ ...meta, download_transaction_id: tx.id, format: tx.export_format }),
+            ],
+          );
+          ledgerTx = lRows[0];
+        }
+
+        const { rows: committedRows } = await client.query(
+          `update download_transactions
+              set state = 'committed',
+                  committed_tokens = $2,
+                  token_transaction_id = $3,
+                  confirmed_at = now(),
+                  updated_at = now()
+            where id = $1
+            returning *`,
+          [id, cost, ledgerTx?.id || null],
+        );
+        await client.query('commit');
+        return {
+          ok: true,
+          duplicate: false,
+          transaction: committedRows[0],
+          token_transaction: ledgerTx,
+          balance: updatedUser[0].token_balance,
+        };
+      } catch (err) {
+        await client.query('rollback').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+
+    async listByUser(user_id, { limit = 50 } = {}) {
+      if (!isUuid(user_id)) return [];
+      const { rows } = await pool.query(
+        'select * from download_transactions where user_id = $1 order by created_at desc limit $2',
+        [user_id, Math.max(1, Math.min(Number(limit) || 50, 200))],
+      );
+      return rows;
+    },
+
+    async releaseExpired(at = new Date().toISOString()) {
+      const { rowCount } = await pool.query(
+        `update download_transactions
+            set state = 'expired', updated_at = now()
+          where state in ('pending', 'reserved', 'file_prepared')
+            and expires_at <= $1`,
+        [new Date(at)],
+      );
+      return rowCount || 0;
+    },
+  };
+
+  const documentFiles = {
+    async save({ document_id, user_id, ext, original_name, size_bytes, sha256, content = null, storage_provider = 'postgres', storage_key = null }) {
+      if (!isUuid(document_id) || !isUuid(user_id)) return null;
+      const isR2 = storage_provider === 'r2';
+      if (!isR2 && (!Buffer.isBuffer(content) || content.length === 0)) return null;
+      const finalSize = Number(size_bytes || (Buffer.isBuffer(content) ? content.length : 0));
+      if (finalSize <= 0 || finalSize > 10 * 1024 * 1024) {
+        throw new Error('Ukuran berkas melebihi batas penyimpanan persisten (10 MB).');
+      }
+      await pool.query(
+        `insert into document_files (document_id, user_id, ext, original_name, size_bytes, sha256, content, storage_provider, storage_key)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         on conflict (document_id) do nothing`,
+        [document_id, user_id, ext, String(original_name || `document.${ext}`).slice(0, 255), finalSize, sha256, isR2 ? null : content, storage_provider, storage_key],
+      );
+      return { document_id, user_id, ext, original_name, size_bytes: finalSize, sha256, storage_provider, storage_key };
+    },
+    async findByDocumentId(document_id, { user_id = null } = {}) {
+      if (!isUuid(document_id)) return null;
+      const query = user_id && isUuid(user_id)
+        ? 'select document_id, user_id, ext, original_name, size_bytes, sha256, content, storage_provider, storage_key, created_at from document_files where document_id = $1 and user_id = $2'
+        : 'select document_id, user_id, ext, original_name, size_bytes, sha256, content, storage_provider, storage_key, created_at from document_files where document_id = $1';
+      const params = user_id && isUuid(user_id) ? [document_id, user_id] : [document_id];
+      const { rows } = await pool.query(query, params);
+      if (!rows[0]) return null;
+      return {
+        ...rows[0],
+        storage_provider: rows[0].storage_provider || 'postgres',
+        storage_key: rows[0].storage_key || null,
+        buffer: rows[0].content != null
+          ? (Buffer.isBuffer(rows[0].content) ? Buffer.from(rows[0].content) : Buffer.from(rows[0].content))
+          : null,
+      };
+    },
+    async deleteByDocumentId(document_id) {
+      if (!isUuid(document_id)) return false;
+      const { rowCount } = await pool.query('delete from document_files where document_id = $1', [document_id]);
+      return (rowCount || 0) > 0;
+    },
+  };
+
+  async function healthCheck() {
+    const started = Date.now();
+    try {
+      await pool.query('select 1');
+      const version = await getSchemaVersion(pool);
+      return {
+        ok: true,
+        driver: 'postgresql',
+        schema_version: version,
+        latency_ms: Date.now() - started,
+        pool: {
+          total: pool.totalCount,
+          idle: pool.idleCount,
+          waiting: pool.waitingCount,
+        },
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        driver: 'postgresql',
+        schema_version: schemaVersion,
+        latency_ms: Date.now() - started,
+        error: err.message,
+      };
+    }
+  }
+
   return {
     users,
     tokenTransactions,
@@ -790,7 +1053,11 @@ export async function createPostgresRepositories(connectionString) {
     analyses,
     issues,
     payments,
+    downloadTransactions,
+    documentFiles,
     driver: 'postgresql',
+    schemaVersion,
+    healthCheck,
     close: () => pool.end(),
   };
 }

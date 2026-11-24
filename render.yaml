@@ -1,3 +1,9 @@
+# RUNUT Zero-Cost Persistent Backend Blueprint
+# Architecture:
+#   Frontend + Same-Origin Proxy : Cloudflare Pages Free + Pages Functions (functions/api/[[path]].js)
+#   Backend API + LibreOffice    : Render Free Web Service (Docker)
+#   Database                     : Neon Free PostgreSQL (external, non-expiring, TLS)
+#   Persistent Document Storage  : Cloudflare R2 Free (private bucket, S3-compatible)
 services:
   - type: web
     name: runut-web
@@ -12,13 +18,59 @@ services:
       - key: JWT_ACCESS_SECRET
         generateValue: true
       - key: DATABASE_URL
-        fromDatabase:
-          name: runut-db
-          property: connectionString
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: PG_CONNECTION_TIMEOUT_MS
+        value: "10000"
       - key: FRONTEND_URL
         sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: COOKIE_SAME_SITE
+        value: "lax"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: FILE_STORAGE_PROVIDER
+        value: "r2"
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: AI_PROVIDER
+        value: openrouter
+      - key: STRICT_FREE_AI_ONLY
+        value: "true"
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_MODEL
+        value: particle-ai/particle-1:free
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: DOCX_PDF_CONVERSION_ENABLED
+        value: "true"
       - key: GOOGLE_CLIENT_ID
         sync: false
+      - key: MIDTRANS_SERVER_KEY
+        sync: false
+      - key: MIDTRANS_CLIENT_KEY
+        sync: false
+      - key: MIDTRANS_IS_PRODUCTION
+        value: "false"
       - key: MAIL_HOST
         sync: false
       - key: MAIL_PORT
@@ -31,15 +83,3 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
-      - key: AI_PROVIDER
-        value: gemini
-      - key: AI_API_KEY
-        sync: false
-      - key: AI_MODEL
-        value: gemini-2.5-flash
-
-databases:
-  - name: runut-db
-    plan: free
-    databaseName: runut
-    user: runut

@@ -168,7 +168,7 @@ test('login, /me, refresh lewat cookie HttpOnly, dan logout mencabut sesi', asyn
   const login = await agent.post('/api/auth/login').send({ email: user.email, password: user.password });
   assert.equal(login.status, 200);
   const cookie = login.headers['set-cookie'].join(';');
-  assert.match(cookie, /runut_rt=/);
+  assert.match(cookie, /__Secure-runut_refresh=/);
   assert.match(cookie, /HttpOnly/i, 'refresh token tidak boleh bisa dibaca JavaScript');
   assert.equal(login.body.refreshToken, undefined, 'refresh token tidak dikirim di body');
 

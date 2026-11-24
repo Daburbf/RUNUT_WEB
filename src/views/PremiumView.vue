@@ -24,9 +24,21 @@ const order = ref(null)
 const creating = ref(false)
 const checking = ref(false)
 const manualChecking = ref(false)
+const renewing = ref(false)
+const renewFailed = ref(false)
 const qrUrl = ref('')
+const remainingSeconds = ref(0)
 const paymentSectionEl = ref(null)
 let poll = null
+let countdownTimer = null
+let serverClockOffsetMs = 0
+
+const formattedCountdown = computed(() => {
+  const s = Math.max(0, Math.floor(remainingSeconds.value || 0))
+  const mm = String(Math.floor(s / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+})
 
 const fmtIdr = (n) => 'Rp' + Number(n || 0).toLocaleString('id-ID')
 const fmtDate = (t) => (t ? new Date(t).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }) : '-')
@@ -69,10 +81,84 @@ function stopPoll() {
   poll = null
 }
 
+function stopCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer)
+  countdownTimer = null
+}
+
+function syncClockOffset(payment) {
+  if (payment?.server_time) {
+    const serverMs = Date.parse(payment.server_time)
+    if (Number.isFinite(serverMs)) {
+      serverClockOffsetMs = serverMs - Date.now()
+    }
+  }
+}
+
+function computeRemainingSec(payment) {
+  if (!payment || payment.status !== 'pending' || !payment.expires_at) return 0
+  const expMs = Date.parse(payment.expires_at)
+  if (!Number.isFinite(expMs)) return 0
+  const syncedNow = Date.now() + serverClockOffsetMs
+  return Math.max(0, Math.floor((expMs - syncedNow) / 1000))
+}
+
+async function renewExpiredQris(silent = false) {
+  if (!order.value || order.value.channel !== 'qris' || renewing.value) return
+  renewing.value = true
+  renewFailed.value = false
+  error.value = ''
+  if (!silent) {
+    notice.value = 'QRIS sebelumnya telah kedaluwarsa. Membuat kode pembayaran baru.'
+  }
+  try {
+    const data = await api(`/api/payments/${order.value.order_id}/renew`, { method: 'POST', body: {} })
+    apply(data.payment, data.token_balance)
+    if (data.already_paid) {
+      notice.value = 'Pembayaran berhasil.'
+      return
+    }
+    if (data.renewed && data.payment?.order_id) {
+      router.replace({ name: 'tokens', query: { ...route.query, order: data.payment.order_id } })
+      await loadQr()
+      startPoll()
+      startCountdown()
+      notice.value = 'QRIS sebelumnya telah kedaluwarsa. Kode pembayaran baru berlaku 10 menit.'
+    }
+  } catch (e) {
+    renewFailed.value = true
+    error.value = e.message || 'Gagal memperbarui kode QRIS otomatis. Klik tombol "Buat Kode QRIS Baru" untuk mencoba lagi.'
+  } finally {
+    renewing.value = false
+  }
+}
+
+function startCountdown() {
+  stopCountdown()
+  if (!order.value || order.value.channel !== 'qris' || order.value.status !== 'pending') {
+    remainingSeconds.value = 0
+    return
+  }
+  const tick = () => {
+    const left = computeRemainingSec(order.value)
+    remainingSeconds.value = left
+    if (left <= 0) {
+      stopCountdown()
+      if (order.value?.status === 'pending' && order.value?.channel === 'qris' && !renewing.value) {
+        renewExpiredQris(false)
+      }
+    }
+  }
+  tick()
+  if (remainingSeconds.value > 0) {
+    countdownTimer = setInterval(tick, 1000)
+  }
+}
+
 function startPoll() {
   stopPoll()
   if (order.value?.status !== 'pending') return
-  poll = setInterval(() => check(true), 15000)
+  poll = setInterval(() => check(true), 10000)
 }
 
 async function refreshLedger() {
@@ -84,6 +170,7 @@ async function refreshLedger() {
 }
 
 function apply(payment, newBalance) {
+  syncClockOffset(payment)
   const wasPending = order.value?.order_id === payment.order_id && order.value?.status === 'pending'
   order.value = payment
   const i = orders.value.findIndex((o) => o.order_id === payment.order_id)
@@ -94,14 +181,18 @@ function apply(payment, newBalance) {
 
   if (payment.status !== 'pending') {
     stopPoll()
+    stopCountdown()
+    remainingSeconds.value = 0
     if (payment.status === 'paid') {
       const added = payment.token_amount ? `+${payment.token_amount} token` : 'Token'
       if (wasPending || !notice.value) {
-        notice.value = `Pembayaran terverifikasi! ${added} berhasil ditambahkan ke saldo Anda.`
+        notice.value = `Pembayaran berhasil. ${added} telah ditambahkan ke saldo Anda.`
       }
       auth.refreshProfile()
       refreshLedger()
     }
+  } else if (payment.channel === 'qris') {
+    startCountdown()
   }
 }
 
@@ -201,6 +292,10 @@ onMounted(async () => {
         await loadQr()
         startPoll()
       }
+    } else {
+      // Pulihkan transaksi QRIS pending yang masih aktif bila pengguna refresh halaman
+      const activeQris = orders.value.find((o) => o.channel === 'qris' && o.status === 'pending')
+      if (activeQris) await openOrder(activeQris)
     }
   } catch (e) {
     error.value = e.message || 'Data pembayaran tidak bisa dimuat.'
@@ -211,6 +306,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopPoll()
+  stopCountdown()
   if (qrUrl.value) URL.revokeObjectURL(qrUrl.value)
 })
 </script>
@@ -409,16 +505,63 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <!-- QRIS -->
-      <div v-if="order.channel === 'qris'" class="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center">
-        <img v-if="qrUrl" :src="qrUrl" alt="Kode QRIS pembayaran" class="qr-keep-light h-52 w-52 border-2 border-black bg-white p-2" />
-        <div v-else class="flex h-52 w-52 items-center justify-center border-2 border-dashed border-black text-center font-mono text-[10px] uppercase tracking-widest text-black/50">
-          Kode QR tersedia pada payment gateway
+      <!-- QRIS Dinamis (Masa berlaku 10 menit + Live Countdown + Auto-Refresh) -->
+      <div v-if="order.channel === 'qris'" class="mt-5 flex flex-col gap-6 sm:flex-row sm:items-center">
+        <div class="relative flex flex-col items-center">
+          <p class="mb-2 font-mono text-[10px] font-bold uppercase tracking-widest text-black/60">SCAN QRIS UNTUK MEMBAYAR</p>
+          <div class="relative">
+            <img
+              v-if="qrUrl && order.status === 'pending' && remainingSeconds > 0"
+              :src="qrUrl"
+              alt="Kode QRIS pembayaran"
+              class="qr-keep-light h-56 w-56 border-2 border-black bg-white p-2"
+            />
+            <div
+              v-else-if="renewing"
+              class="flex h-56 w-56 flex-col items-center justify-center gap-2 border-2 border-black bg-[#F2F2F2] p-4 text-center font-mono text-[11px] font-bold uppercase tracking-wider"
+            >
+              <i class="fa-solid fa-circle-notch fa-spin text-2xl text-[#FF3000]"></i>
+              <span>Membuat kode QRIS baru...</span>
+            </div>
+            <div
+              v-else-if="order.status === 'paid'"
+              class="flex h-56 w-56 flex-col items-center justify-center gap-2 border-2 border-black bg-black p-4 text-center font-mono text-xs font-bold uppercase tracking-widest text-white"
+            >
+              <i class="fa-solid fa-circle-check text-3xl text-[#FF3000]"></i>
+              <span>Pembayaran Berhasil</span>
+            </div>
+            <div
+              v-else
+              class="flex h-56 w-56 flex-col items-center justify-center gap-2 border-2 border-dashed border-black bg-[#F2F2F2] p-4 text-center font-mono text-[10px] uppercase tracking-widest text-black/60"
+            >
+              <i class="fa-solid fa-clock text-xl text-[#FF3000]"></i>
+              <span>{{ order.status === 'expired' ? 'QRIS Kedaluwarsa' : 'Kode QR tersedia pada payment gateway' }}</span>
+            </div>
+          </div>
         </div>
-        <div class="text-sm leading-relaxed">
+
+        <div class="flex-1 text-sm leading-relaxed">
+          <div v-if="order.status === 'pending'" class="mb-4 inline-flex flex-col border-2 border-black bg-[#F2F2F2] px-4 py-2.5">
+            <span class="font-mono text-[10px] font-bold uppercase tracking-widest text-black/60">QRIS berlaku selama:</span>
+            <span
+              class="mt-0.5 font-mono text-3xl font-black tracking-widest tabular-nums"
+              :class="remainingSeconds <= 60 ? 'text-[#FF3000]' : 'text-black'"
+            >
+              {{ formattedCountdown }}
+            </span>
+          </div>
+
           <p class="font-bold uppercase tracking-wide">Pindai kode QRIS dengan aplikasi e-wallet atau mobile banking Anda.</p>
           <p class="mt-1 text-black/70">Nominal pembayaran: <strong>{{ fmtIdr(order.amount) }}</strong> untuk <strong>{{ order.token_amount }} Token</strong>.</p>
-          <p v-if="order.expires_at" class="mt-2 font-mono text-xs uppercase tracking-widest text-black/50">Berlaku sampai {{ fmtDate(order.expires_at) }}</p>
+          <p class="mt-1 font-mono text-xs uppercase tracking-widest text-black/60">Status: <strong>{{ statusOf(order.status).label }}</strong></p>
+          <p v-if="order.expires_at" class="mt-1 font-mono text-xs uppercase tracking-widest text-black/50">Berlaku sampai {{ fmtDate(order.expires_at) }}</p>
+
+          <div v-if="renewFailed || order.status === 'expired'" class="mt-4">
+            <BaseButton size="sm" variant="accent" :disabled="renewing" @click="renewExpiredQris(false)">
+              <i :class="['fa-solid', renewing ? 'fa-circle-notch fa-spin' : 'fa-arrows-rotate']"></i>
+              Buat Kode QRIS Baru (10 Menit)
+            </BaseButton>
+          </div>
         </div>
       </div>
 

@@ -1,8 +1,8 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
-// PDF sederhana untuk unduhan revisi dan invoice: teks polos multi-halaman,
-// font Helvetica bawaan PDF. Tidak menyimpan gambar, tabel, atau gaya lain -
-// ponytail: cukup untuk laporan; ganti pemanggil bila butuh tata letak kaya.
+// Clean multi-page PDF builder for plain-text exports and payment invoices.
+// User document exports NEVER include RUNUT watermarks, logos, promotional footers,
+// or RUNUT creator metadata.
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
 const MARGIN = 56;
@@ -38,26 +38,35 @@ function wrap(text, font, size, width) {
   return lines;
 }
 
-export async function buildPdf({ title = 'Runut', meta = '', body = '' }) {
+export async function buildPdf({
+  title = '',
+  meta = '',
+  body = '',
+  includePageNumbers = false,
+} = {}) {
   const doc = await PDFDocument.create();
-  doc.setTitle(clean(title));
-  doc.setCreator('Runut');
+  if (title) doc.setTitle(clean(title));
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const width = PAGE_W - 2 * MARGIN;
 
   const blocks = [
-    { text: clean(title), font: bold, size: 17, lead: 24 },
-    ...(meta ? [{ text: clean(meta), font, size: 9, lead: 14, gap: 8 }] : []),
-    { text: clean(body), font, size: 11, lead: 17, gap: 18 },
+    ...(title ? [{ text: clean(title), font: bold, size: 15, lead: 22 }] : []),
+    ...(meta ? [{ text: clean(meta), font, size: 9, lead: 14, gap: 6 }] : []),
+    { text: clean(body), font, size: 11, lead: 17, gap: title || meta ? 14 : 0 },
   ];
 
   let page = doc.addPage([PAGE_W, PAGE_H]);
   let y = PAGE_H - MARGIN;
   let pageNo = 1;
 
+  const drawPageNumber = () => {
+    if (!includePageNumbers) return;
+    page.drawText(`${pageNo}`, { x: PAGE_W / 2, y: MARGIN - 20, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
+  };
+
   const newPage = () => {
-    page.drawText(`Runut - ${pageNo}`, { x: MARGIN, y: MARGIN - 20, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
+    drawPageNumber();
     page = doc.addPage([PAGE_W, PAGE_H]);
     pageNo += 1;
     y = PAGE_H - MARGIN;
@@ -71,7 +80,6 @@ export async function buildPdf({ title = 'Runut', meta = '', body = '' }) {
       y -= block.lead;
     }
   }
-  page.drawText(`Runut - ${pageNo}`, { x: MARGIN, y: MARGIN - 20, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
-  // Objek tidak dipadatkan ke object stream agar tetap terbaca pembaca PDF lama.
+  drawPageNumber();
   return Buffer.from(await doc.save({ useObjectStreams: false }));
 }

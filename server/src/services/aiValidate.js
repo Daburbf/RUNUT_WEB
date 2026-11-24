@@ -94,9 +94,71 @@ export function validateAiIssues(parsed, originalText, { maxIssues = 30 } = {}) 
       suggestion: suggestion.trim().slice(0, 2000),
       needs_manual_review: needsManual,
       review_reasons: needsManual ? reasons : [],
+      section: typeof raw.section === 'string' ? raw.section.trim().slice(0, 160) : null,
+      citation_status: typeof raw.citation_status === 'string' ? raw.citation_status.trim().slice(0, 40) : null,
+      similarity_review: typeof raw.similarity_review === 'string' ? raw.similarity_review.trim().slice(0, 40) : null,
     });
   }
-  return { valid, errors, dropped: errors.length };
+  return {
+    valid,
+    errors,
+    dropped: errors.length,
+    preservation_checks: parsed.preservation_checks && typeof parsed.preservation_checks === 'object'
+      ? parsed.preservation_checks
+      : null,
+  };
+}
+
+export function validateStructuredEdits(parsed, blocksById) {
+  const errors = [];
+  const valid = [];
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.edits)) {
+    return { valid: [], errors: ['Respons AI tidak memuat array "edits".'] };
+  }
+  const seen = new Set();
+  for (const [idx, raw] of parsed.edits.entries()) {
+    const where = `edits[${idx}]`;
+    if (!raw || typeof raw !== 'object') {
+      errors.push(`${where}: bukan objek.`);
+      continue;
+    }
+    const { block_id, original_text, revised_text, reason } = raw;
+    if (typeof block_id !== 'string' || !blocksById.has(block_id)) {
+      errors.push(`${where}: block_id "${block_id}" tidak valid.`);
+      continue;
+    }
+    if (seen.has(block_id)) {
+      errors.push(`${where}: block_id "${block_id}" duplikat.`);
+      continue;
+    }
+    const block = blocksById.get(block_id);
+    if (block.protected) {
+      errors.push(`${where}: block_id "${block_id}" dilindungi dan tidak boleh diubah.`);
+      continue;
+    }
+    if (typeof original_text !== 'string' || original_text !== block.text) {
+      errors.push(`${where}: original_text tidak cocok dengan teks blok asli.`);
+      continue;
+    }
+    if (typeof revised_text !== 'string' || !revised_text.trim()) {
+      errors.push(`${where}: revised_text kosong.`);
+      continue;
+    }
+    seen.add(block_id);
+    const { score, reasons } = riskScore(original_text, revised_text);
+    valid.push({
+      block_id,
+      section: typeof raw.section === 'string' ? raw.section : (block.section || ''),
+      original_text,
+      revised_text: revised_text.trim(),
+      reason: typeof reason === 'string' ? reason.trim().slice(0, 500) : '',
+      citation_status: typeof raw.citation_status === 'string' ? raw.citation_status : 'preserved',
+      similarity_review: typeof raw.similarity_review === 'string' ? raw.similarity_review : 'ok',
+      needs_manual_review: score >= 2,
+      review_reasons: score >= 2 ? reasons : [],
+    });
+  }
+  return { valid, errors };
 }
 
 // Pemeringkatan bukti (docs/KEPUTUSAN_TEKNIS.md, D4). Bukan skor keyakinan

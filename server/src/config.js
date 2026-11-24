@@ -19,12 +19,32 @@ function secretFor(name) {
   return randomBytes(32).toString('hex');
 }
 
+const isProduction = (process.env.NODE_ENV || 'development') === 'production';
+const frontendUrl = (process.env.FRONTEND_URL || (isProduction ? '' : 'http://localhost:5173')).replace(/\/$/, '');
+const corsOrigins = Array.from(new Set(
+  [
+    frontendUrl,
+    ...String(process.env.CORS_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim().replace(/\/$/, ''))
+      .filter(Boolean),
+  ].filter(Boolean),
+));
+
 export const config = {
   env: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT || 3000),
-  frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, ''),
+  frontendUrl,
+  corsOrigins,
 
-  database: { url: process.env.DATABASE_URL || '' },
+  database: {
+    url: process.env.DATABASE_URL || '',
+    poolMax: Number(process.env.PG_POOL_MAX || 10),
+    idleTimeoutMs: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
+    connectionTimeoutMs: Number(process.env.PG_CONNECTION_TIMEOUT_MS || 5000),
+    statementTimeoutMs: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 15000),
+    ssl: process.env.DATABASE_SSL || '',
+  },
 
   jwt: {
     accessSecret: secretFor('JWT_ACCESS_SECRET'),
@@ -33,11 +53,26 @@ export const config = {
   },
 
   ai: {
-    provider: (process.env.AI_PROVIDER || '9router').toLowerCase(),
-    baseUrl: (process.env.AI_BASE_URL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (process.env.AI_PROVIDER?.toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:20128/v1'))).replace(/\/$/, ''),
-    apiKey: process.env.AI_API_KEY || '',
-    model: process.env.AI_MODEL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : ''),
+    provider: (process.env.AI_PROVIDER || 'openrouter').toLowerCase(),
+    baseUrl: (process.env.OPENROUTER_BASE_URL || process.env.AI_BASE_URL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (process.env.AI_PROVIDER?.toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1'))).replace(/\/$/, ''),
+    apiKey: process.env.OPENROUTER_API_KEY || process.env.AI_API_KEY || '',
+    model: process.env.OPENROUTER_MODEL || process.env.AI_MODEL || (process.env.AI_PROVIDER?.toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : 'particle-ai/particle-1:free'),
     timeoutMs: Number(process.env.AI_TIMEOUT_MS || 90000),
+    geminiApiKey: process.env.GEMINI_API_KEY || '',
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
+  },
+
+  admin: {
+    emails: String(process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  },
+
+  conversion: {
+    libreOfficePath: (process.env.LIBREOFFICE_PATH || process.env.LIBREOFFICE_BIN || '').trim(),
+    docxPdfEnabled: String(process.env.DOCX_PDF_CONVERSION_ENABLED || 'true') !== 'false',
+    docxPdfTimeoutMs: Number(process.env.DOCX_PDF_TIMEOUT_MS || 120000),
   },
 
   payments: {
@@ -70,12 +105,27 @@ export function checkStartupConfig() {
   if (ephemeral.length) {
     problems.push(`${ephemeral.join(', ')} kosong - memakai kunci acak sementara; semua sesi tidak valid setelah server restart.`);
   }
+  if (config.env === 'production' && !config.frontendUrl) {
+    problems.push('FRONTEND_URL belum dikonfigurasi di production.');
+  } else if (config.env === 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(config.frontendUrl)) {
+    problems.push('FRONTEND_URL masih menunjuk ke localhost di mode production. Ganti dengan URL publik HTTPS.');
+  }
   if (!config.ai.baseUrl || !config.ai.model || !config.ai.apiKey) {
-    problems.push('Konfigurasi AI belum lengkap (AI_BASE_URL/AI_API_KEY/AI_MODEL) - endpoint analisis menjawab 503 sampai dilengkapi.');
+    problems.push('Konfigurasi AI belum lengkap (OPENROUTER_API_KEY / AI_API_KEY) - endpoint analisis menjawab 503 sampai dilengkapi.');
   }
   if (!config.payments.serverKey) {
     problems.push('MIDTRANS_SERVER_KEY belum dikonfigurasi: pembelian token dinonaktifkan.');
   }
   if (!config.mail.configured) problems.push('SMTP belum dikonfigurasi - reset password via email menjawab 503.');
   return problems;
+}
+
+export function validateProductionConfig() {
+  if (config.env !== 'production') return;
+  const missing = [];
+  if (ephemeral.includes('JWT_ACCESS_SECRET')) missing.push('JWT_ACCESS_SECRET');
+  if (!config.database.url) missing.push('DATABASE_URL');
+  if (missing.length) {
+    throw new Error(`Konfigurasi wajib production belum diisi: ${missing.join(', ')}.`);
+  }
 }

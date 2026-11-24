@@ -1,0 +1,297 @@
+name: RUNUT CI Quality, Integration & Security Gates
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-build:
+    name: Frontend Build & Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Clean install frontend dependencies
+        run: npm ci
+
+      - name: Dependency audit (frontend)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Verify frontend production build
+        run: npm run build
+
+  backend-unit-tests:
+    name: Backend Unit, QA & Security Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Clean install backend dependencies
+        run: npm ci --prefix server
+
+      - name: Verify no committed secrets (.env files)
+        run: |
+          if git ls-files | grep -E '(^|/)(\.env|\.env\.local|server/\.env)$'; then
+            echo "ERROR: Environment file with secrets is tracked in git!"
+            exit 1
+          fi
+
+      - name: Dependency audit (backend)
+        run: npm --prefix server audit --omit=dev --audit-level=high
+
+      - name: Run full backend test suite
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: ci-test-secret-minimum-32-characters-long
+        run: npm --prefix server test
+
+  postgres-integration-tests:
+    name: PostgreSQL Live Integration Tests (Strict Mode)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: runut_test
+          POSTGRES_PASSWORD: runut_test_password
+          POSTGRES_DB: runut_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U runut_test -d runut_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix server
+
+      - name: Execute live PostgreSQL migration, ledger, concurrency & persistent file tests
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: ci-test-secret-minimum-32-characters-long
+          RUNUT_TEST_DATABASE_URL: postgresql://runut_test:runut_test_password@localhost:5432/runut_test
+          RUNUT_REQUIRE_INTEGRATION_TESTS: "true"
+        run: node --test server/test/postgres.test.js
+
+  libreoffice-conversion-tests:
+    name: Linux Native LibreOffice Conversion Tests (Strict Mode)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install LibreOffice & fonts on Ubuntu runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer libreoffice-core fonts-dejavu fonts-noto-core
+          soffice --version
+
+      - name: Install backend dependencies
+        run: npm ci --prefix server
+
+      - name: Run real DOC->DOCX and DOCX->PDF LibreOffice integration tests
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: ci-test-secret-minimum-32-characters-long
+          RUNUT_REQUIRE_INTEGRATION_TESTS: "true"
+        run: node --test server/test/windows-document-processing.test.js server/test/docx-pdf-templates-unified.test.js
+
+  windows-native-tests:
+    name: Windows Native Document Processing Tests (No Docker)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix server
+
+      - name: Run Windows native document processing & QA tests
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: ci-test-secret-minimum-32-characters-long
+        run: node --test server/test/windows-document-processing.test.js server/test/real-world-qa-acceptance.test.js
+
+  production-smoke-e2e:
+    name: End-to-End Production Server Smoke Test
+    runs-on: ubuntu-latest
+    needs: [frontend-build, backend-unit-tests]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: runut_test
+          POSTGRES_PASSWORD: runut_test_password
+          POSTGRES_DB: runut_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U runut_test -d runut_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies & build frontend
+        run: npm ci && npm ci --prefix server && npm run build
+
+      - name: Start server in production mode against PostgreSQL and run HTTP E2E smoke checks
+        env:
+          NODE_ENV: production
+          PORT: 8080
+          FRONTEND_URL: https://runut.example.com
+          DATABASE_URL: postgresql://runut_test:runut_test_password@localhost:5432/runut_test
+          DATABASE_SSL: "false"
+          JWT_ACCESS_SECRET: ci-production-smoke-secret-minimum-32-characters-long
+        run: |
+          node server/src/index.js &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID || true" EXIT
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:8080/api/health > /tmp/health.json; then
+              break
+            fi
+            sleep 1
+          done
+          cat /tmp/health.json
+          node -e "
+            const h = JSON.parse(require('fs').readFileSync('/tmp/health.json','utf8'));
+            if (!h.ok || h.database.driver !== 'postgresql' || h.database.schema_version < 5) {
+              console.error('Health check failed:', h);
+              process.exit(1);
+            }
+          "
+          curl -sfI http://127.0.0.1:8080/ | grep -i "200 OK"
+          curl -sfI http://127.0.0.1:8080/api/health | grep -i "strict-transport-security"
+
+  docker-build:
+    name: Docker Production Image Verification (Optional Deployment)
+    runs-on: ubuntu-latest
+    needs: [frontend-build, backend-unit-tests]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build production Docker image
+        run: docker build -t runut-ci:test .
+
+  security-sast-semgrep:
+    name: Security SAST (Semgrep OWASP & Node.js)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep SAST scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/javascript
+            p/nodejs
+            p/owasp-top-ten
+
+  security-secrets-gitleaks:
+    name: Security Secret Scanning (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  security-trivy-scan:
+    name: Security Vulnerability & Misconfiguration Scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem & config scan (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+  security-regression-tests:
+    name: Security Authorization, SSRF, Upload & Payment Regression Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --prefix server
+
+      - name: Run dedicated security regression suites
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: ci-security-test-secret-minimum-32-characters
+        run: node --test server/test/security-audit-regression.test.js server/test/security-and-acceptance.test.js server/test/qris-dynamic-payment.test.js server/test/download-token-safety.test.js

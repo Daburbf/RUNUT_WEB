@@ -1,9 +1,15 @@
-// Klien HTTP terpusat untuk backend Runut (VITE_API_URL, default :3000).
+// Klien HTTP terpusat untuk backend Runut (VITE_API_BASE_URL / VITE_API_URL).
 // Access token disimpan di memori saja. Refresh token berada di cookie
 // HttpOnly milik server sehingga tidak bisa dibaca skrip halaman. Tidak ada
 // kredensial AI di sisi klien - semua rahasia milik server.
-// Kosong = origin yang sama (deploy satu layanan); isi VITE_API_URL saat dev.
-const BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+// Kosong = origin yang sama (deploy satu layanan); isi VITE_API_BASE_URL saat
+// frontend (mis. Vercel) dan backend berada di domain berbeda.
+const RAW_BASE = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
+const BASE = RAW_BASE;
+
+if (import.meta.env.PROD && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(BASE)) {
+  console.warn('[runut] VITE_API_BASE_URL masih menunjuk ke localhost pada build production. Atur URL HTTPS backend produksi.');
+}
 
 let accessToken = null;
 
@@ -90,11 +96,19 @@ export const apiBase = BASE;
 
 // Unduhan berautentikasi: token dikirim lewat header, bukan URL. Dipakai untuk
 // berkas revisi (PDF/TXT/DOCX) dan invoice pembayaran.
-export async function fetchBlob(path) {
+export async function fetchBlob(path, retry = true) {
   const res = await fetch(BASE + path, {
     headers: { Authorization: `Bearer ${accessToken || ''}` },
     credentials: 'include',
   });
+  if (res.status === 401 && retry) {
+    try {
+      session.set(await refreshPair());
+      return fetchBlob(path, false);
+    } catch {
+      session.clear();
+    }
+  }
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new ApiError(res.status, payload.error ? payload : { error: 'Berkas tidak bisa diunduh. Coba lagi.' });
