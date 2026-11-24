@@ -15,12 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       - name: Clean install frontend dependencies
@@ -37,12 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: server/package-lock.json
 
@@ -84,12 +84,12 @@ jobs:
           --health-retries 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: server/package-lock.json
 
@@ -109,12 +109,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: server/package-lock.json
 
@@ -139,12 +139,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: server/package-lock.json
 
@@ -177,12 +177,12 @@ jobs:
           --health-retries 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies & build frontend
@@ -223,7 +223,7 @@ jobs:
     needs: [frontend-build, backend-unit-tests]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build production Docker image
         run: docker build -t runut-ci:test .
@@ -233,7 +233,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run Semgrep SAST scan
         uses: returntocorp/semgrep-action@v1
@@ -248,7 +248,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -262,10 +262,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run Trivy filesystem & config scan (HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -278,12 +278,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: server/package-lock.json
 
