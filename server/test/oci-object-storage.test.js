@@ -41,6 +41,7 @@ import {
   generateOciSignedDownloadUrl,
 } from '../src/services/ociObjectStorage.js';
 import {
+  getDocumentStorageStatus,
   saveOriginalUploadPersistent,
   getOriginalUploadPersistent,
   clearMemoryFileCache,
@@ -248,6 +249,24 @@ test('OCI 1: Endpoint construction, SigV4 real region enforcement (rejects "auto
   assert.equal(verifiedOverCap.maxManagedBytes, MAX_OCI_ALWAYS_FREE_MANAGED_BYTES);
   assert.equal(verifiedOverCap.maxApiRequests, DEFAULT_OCI_MAX_API_REQUESTS);
   assert.equal(verifiedOverCap.maxOutboundBytes, DEFAULT_OCI_MAX_OUTBOUND_BYTES);
+
+  // Health-check document storage status reports OCI without exposing credentials/keys/buckets
+  const status = getDocumentStorageStatus({
+    OBJECT_STORAGE_PROVIDER: 'oci',
+    STRICT_STORAGE_QUOTA_MODE: 'true',
+    OCI_OS_NAMESPACE: 'secret-ns',
+    OCI_OS_REGION: 'ap-singapore-1',
+    OCI_OS_BUCKET: 'secret-bucket',
+    OCI_OS_ACCESS_KEY_ID: 'secret-access-key',
+    OCI_OS_SECRET_ACCESS_KEY: 'super-secret-value',
+  });
+  assert.deepEqual(status, {
+    provider: 'oci',
+    configured: true,
+    strict_quota_mode: true,
+    automatic_failover: false,
+  });
+  assert.equal(JSON.stringify(status).includes('secret'), false);
 });
 
 test('OCI 2: All 9 OCI S3 Compatibility operations work and count multipart requests individually', async () => {

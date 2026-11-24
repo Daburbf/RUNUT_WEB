@@ -35,6 +35,7 @@ import { initStorage, closeStorage, healthCheck, storage } from './repositories/
 import { getProviderInfo } from './services/aiProvider.js';
 import { getAiUsageSnapshot, fetchOpenRouterAccountLimits } from './services/aiQuota.js';
 import { getDocumentProcessingCapabilities } from './services/documentProcessor.js';
+import { getDocumentStorageStatus } from './services/fileStore.js';
 
 export function createApp() {
   const app = express();
@@ -137,6 +138,7 @@ export function createApp() {
       ok: db.ok,
       storage: storage.detail,
       database: db,
+      document_storage: getDocumentStorageStatus(),
       document_processing: docProc,
       ai: {
         provider: ai.provider,

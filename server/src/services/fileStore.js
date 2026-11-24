@@ -35,6 +35,19 @@ export function resolveObjectStorageProvider(env = process.env) {
   return 'postgres';
 }
 
+export function getDocumentStorageStatus(env = process.env) {
+  const provider = resolveObjectStorageProvider(env);
+  const configured = provider === 'oci'
+    ? isOciConfigured(env)
+    : (provider === 'r2' ? isR2Configured(env) : true);
+  return {
+    provider,
+    configured,
+    strict_quota_mode: String(env.STRICT_STORAGE_QUOTA_MODE ?? env.STRICT_R2_QUOTA_MODE ?? 'true').trim().toLowerCase() !== 'false',
+    automatic_failover: false,
+  };
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, '../../.data/uploads');
 const memoryFiles = new Map();
