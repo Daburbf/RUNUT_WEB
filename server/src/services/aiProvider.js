@@ -136,7 +136,7 @@ export class AiError extends Error {
   }
 }
 
-export function assertFreeModelPolicy(provider, model, env = process.env) {
+export function assertFreeModelPolicy(provider, model, env = process.env, { baseUrl = '' } = {}) {
   const p = String(provider || '').trim().toLowerCase();
   const m = String(model || '').trim();
 
@@ -160,7 +160,7 @@ export function assertFreeModelPolicy(provider, model, env = process.env) {
   }
 
   if (p === 'openrouter') {
-    const check = verifyOpenRouterCatalogEntry(m);
+    const check = verifyOpenRouterCatalogEntry(m, { baseUrl: baseUrl || env.OPENROUTER_BASE_URL || env.AI_BASE_URL || '', env });
     if (!check.ok) {
       throw new AiError(check.reason, {
         code: check.code,

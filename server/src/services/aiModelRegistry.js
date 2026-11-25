@@ -216,10 +216,17 @@ export async function refreshOpenRouterCatalog({
   }
 }
 
-export function verifyOpenRouterCatalogEntry(modelId, { requireCatalogMatch = false } = {}) {
+export function verifyOpenRouterCatalogEntry(modelId, { requireCatalogMatch = false, baseUrl = '', env = process.env } = {}) {
   const cleanId = String(modelId || '').trim();
   if (!cleanId) {
     return { ok: false, code: 'AI_INVALID_MODEL', reason: 'Model ID OpenRouter kosong.' };
+  }
+  // Allow mock/*:free ONLY for local loopback HTTP stubs during NODE_ENV=test
+  const isLocalTestStub = String(env.NODE_ENV || '').toLowerCase() === 'test'
+    && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(String(baseUrl || ''))
+    && /^mock\/[a-z0-9._-]+:free$/i.test(cleanId);
+  if (isLocalTestStub) {
+    return { ok: true, entry: null };
   }
   // openrouter/free is the dynamic free router
   const isDynamicFree = cleanId === DEFAULT_OPENROUTER_DYNAMIC_MODEL;
