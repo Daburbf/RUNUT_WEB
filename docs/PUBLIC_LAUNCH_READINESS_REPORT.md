@@ -4,8 +4,8 @@
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Core Application & Full-Stack Build | **Ready (Local)** | Frontend (`vite build`, 3.82 s, 59 modules, 0 secrets in `dist/`) & Backend Express API verified |
-| Automated Backend Test Suite (Local Windows) | **209 Passed / 0 Failed / 4 Conditionally Skipped** | 213 total tests (includes Free Multi-Model Registry, Migration v9 `ai_provider_quotas`, Privacy Gate, 3-Stage DOCX XML Structural Fingerprinting, PDF fail-closed, OCI/R2 storage, and security regressions); strict CI mode verified (`RUNUT_REQUIRE_INTEGRATION_TESTS=true`) |
+| Core Application & Full-Stack Build | **Ready (Local)** | Frontend (`vite build`, 2.32 s, 59 modules, 0 secrets in `dist/`) & Backend Express API verified |
+| Automated Backend Test Suite (Local Windows) | **214 Passed / 0 Failed / 5 Conditionally Skipped** | 219 total tests (includes Verified Free DeepSeek V4.1 Flash adapters for Token Harbor & BeatAPI with consent/privacy gates, Free Multi-Model Registry, Migration v9 `ai_provider_quotas`, 3-Stage DOCX XML Structural Fingerprinting, PDF fail-closed, OCI/R2 storage, and security regressions); strict CI mode verified (`RUNUT_REQUIRE_INTEGRATION_TESTS=true`) |
 | Persistent File Storage (Restart Survival) | **Implemented** | Simplest Zero-Card Primary: **Neon Free PostgreSQL `BYTEA`** (`OBJECT_STORAGE_PROVIDER=postgres`, 700 MB managed / 4 GB/mo outbound app safety limits, SHA-256 verified); Optional: **Oracle Object Storage Always Free** (`ociObjectStorage.js`, Migration v8) & **Cloudflare R2** (`r2Storage.js`, Migration v7) |
 | Native Windows Support (No Docker) | **Implemented & Verified** | `soffice.com` preferred, isolated profiles, safe `spawn(..., { shell: false })`, temp cleanup |
 | Provisioned CI Integration Jobs | **Configured** | `.github/workflows/ci.yml` provisions live `postgres:16-alpine` and Ubuntu `libreoffice-writer` in strict mode |

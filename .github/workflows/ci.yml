@@ -63,7 +63,9 @@ jobs:
         env:
           NODE_ENV: test
           JWT_ACCESS_SECRET: ci-test-secret-minimum-32-characters-long
-        run: npm --prefix server test
+        run: |
+          npm --prefix server test
+          node --test server/test/deepseek-free-api-providers.test.js server/test/free-multimodel-and-template-preservation.test.js
 
   postgres-integration-tests:
     name: PostgreSQL Live Integration Tests (Strict Mode)

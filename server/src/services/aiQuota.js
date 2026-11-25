@@ -11,13 +11,33 @@ const state = {
   fallbackActivations: 0,
   byProvider: {
     openrouter: createProviderBucket(),
+    tokenharbor: createProviderBucket(),
+    beatapi: createProviderBucket(),
     gemini: createProviderBucket(),
     groq: createProviderBucket(),
   },
   // Per-provider/model rate-limit & cooldown state (key = `${provider}:${model}`)
   modelState: {},
-  // Account-level daily exhaustion timestamp (ms) for shared-quota providers like OpenRouter Free
+  // Account-level daily exhaustion timestamp (ms) for shared-quota providers like OpenRouter Free / Token Harbor
   accountExhaustedUntil: {},
+  // Cached Token Harbor allowance check (/api/cli/free-tier)
+  tokenHarborAllowanceCache: {
+    fetchedAt: 0,
+    expiresAt: 0,
+    data: null,
+  },
+  // Cached BeatAPI free catalog check (/v1/free-tier) & 1-req/min account slot controller
+  beatApiCatalogCache: {
+    fetchedAt: 0,
+    expiresAt: 0,
+    models: null,
+    withdrawn: false,
+  },
+  beatApiRateSlot: {
+    inFlight: false,
+    lastSuccessAt: 0,
+    nextAllowedAt: 0,
+  },
   dailyUsage: {},
 };
 
@@ -370,7 +390,266 @@ export function resetAiUsageForTest() {
   }
   state.modelState = {};
   state.accountExhaustedUntil = {};
+  state.tokenHarborAllowanceCache = { fetchedAt: 0, expiresAt: 0, data: null };
+  state.beatApiCatalogCache = { fetchedAt: 0, expiresAt: 0, models: null, withdrawn: false };
+  state.beatApiRateSlot = { inFlight: false, lastSuccessAt: 0, nextAllowedAt: 0 };
   state.dailyUsage = {};
+}
+
+function parseCacheControlMaxAgeMs(headers, defaultMs = 30_000) {
+  const cc = headers?.get?.('cache-control') || '';
+  const m = String(cc).match(/max-age=(\d+)/i);
+  if (m) {
+    const sec = Number(m[1]);
+    if (Number.isFinite(sec) && sec >= 0) return Math.min(sec * 1000, 300_000);
+  }
+  return defaultMs;
+}
+
+// Token Harbor Free-Tier Allowance Adapter: GET https://tokenharbor.ai/api/cli/free-tier
+// Never invents remaining request count (value-based rolling 7x24h window).
+// Applies conservative fail-closed behavior if endpoint is unavailable.
+export async function checkTokenHarborFreeAllowance({
+  apiKey = process.env.TOKEN_HARBOR_API_KEY || '',
+  allowanceUrl = process.env.TOKEN_HARBOR_ALLOWANCE_URL || 'https://tokenharbor.ai/api/cli/free-tier',
+  requiredModel = 'deepseek-v4.1-flash:free',
+  fetchImpl = fetch,
+  force = false,
+  nowMs = Date.now(),
+  timeoutMs = 5000,
+} = {}) {
+  const key = String(apiKey || '').trim();
+  if (!key) {
+    return { ok: false, code: 'AI_NOT_CONFIGURED', reason: 'TOKEN_HARBOR_API_KEY belum dikonfigurasi.' };
+  }
+
+  if (!force && state.tokenHarborAllowanceCache.data && nowMs < state.tokenHarborAllowanceCache.expiresAt) {
+    return evaluateTokenHarborAllowancePayload(state.tokenHarborAllowanceCache.data, requiredModel, nowMs, true);
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(allowanceUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        code: res.status === 401 || res.status === 403 ? `AI_AUTH_${res.status}` : 'AI_ALLOWANCE_UNAVAILABLE',
+        status: res.status,
+        reason: `Endpoint allowance Token Harbor mengembalikan HTTP ${res.status} (fail-closed).`,
+      };
+    }
+    const payload = await res.json().catch(() => null);
+    if (!payload || typeof payload !== 'object') {
+      return { ok: false, code: 'AI_ALLOWANCE_INVALID', reason: 'Respons allowance Token Harbor tidak valid (fail-closed).' };
+    }
+
+    const ttlMs = parseCacheControlMaxAgeMs(res.headers, 30_000);
+    state.tokenHarborAllowanceCache = {
+      fetchedAt: nowMs,
+      expiresAt: nowMs + ttlMs,
+      data: payload,
+    };
+
+    return evaluateTokenHarborAllowancePayload(payload, requiredModel, nowMs, false);
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'AI_ALLOWANCE_UNAVAILABLE',
+      reason: `Tidak dapat memverifikasi allowance Token Harbor (fail-closed): ${err?.message || 'network error'}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function evaluateTokenHarborAllowancePayload(payload, requiredModel, nowMs, cached) {
+  const modelsEnabled = payload.models_enabled === true;
+  const exhausted = payload.exhausted === true;
+  const models = Array.isArray(payload.models) ? payload.models : [];
+  const resetAt = typeof payload.reset_at === 'string' && payload.reset_at.trim() ? payload.reset_at.trim() : null;
+  const usedPct = typeof payload.used_pct === 'number' ? payload.used_pct : null;
+
+  const entry = ensureModelQuota('tokenharbor', requiredModel);
+  entry.enabled = modelsEnabled && models.includes(requiredModel);
+  if (resetAt) entry.reset_timestamp = resetAt;
+
+  if (!modelsEnabled) {
+    return {
+      ok: false,
+      cached,
+      code: 'AI_TOKEN_HARBOR_DISABLED',
+      used_pct: usedPct,
+      exhausted,
+      reset_at: resetAt,
+      reason: 'Model gratis Token Harbor sedang dinonaktifkan (models_enabled=false).',
+    };
+  }
+  if (!models.includes(requiredModel)) {
+    return {
+      ok: false,
+      cached,
+      code: 'AI_MODEL_UNAVAILABLE',
+      used_pct: usedPct,
+      exhausted,
+      reset_at: resetAt,
+      reason: `Model "${requiredModel}" tidak tercantum pada daftar model gratis aktif Token Harbor.`,
+    };
+  }
+  if (exhausted) {
+    const resetMs = resetAt ? Date.parse(resetAt) : NaN;
+    if (Number.isFinite(resetMs) && resetMs > nowMs) {
+      entry.cooldown_until = resetAt;
+      entry.rate_limit_type = 'rolling_7d_allowance';
+      state.accountExhaustedUntil.tokenharbor = resetMs;
+    } else if (!Number.isFinite(resetMs)) {
+      const fallbackCooldown = nowMs + 5 * 60 * 1000;
+      entry.cooldown_until = new Date(fallbackCooldown).toISOString();
+      state.accountExhaustedUntil.tokenharbor = fallbackCooldown;
+    }
+    return {
+      ok: false,
+      cached,
+      code: 'AI_QUOTA_EXHAUSTED',
+      used_pct: usedPct,
+      exhausted: true,
+      reset_at: resetAt,
+      reason: `Jatah gratis rolling 7x24 jam Token Harbor habis.${resetAt ? ` Reset pada ${resetAt}.` : ''}`,
+    };
+  }
+
+  // Rolling window recovered
+  if (state.accountExhaustedUntil.tokenharbor && nowMs >= state.accountExhaustedUntil.tokenharbor) {
+    delete state.accountExhaustedUntil.tokenharbor;
+  }
+  entry.cooldown_until = null;
+
+  return {
+    ok: true,
+    cached,
+    used_pct: usedPct,
+    exhausted: false,
+    reset_at: resetAt,
+    models_enabled: true,
+    models,
+  };
+}
+
+// BeatAPI Free Catalog Preflight: GET https://api.beatapi.io/v1/free-tier
+export async function checkBeatApiFreeCatalog({
+  catalogUrl = process.env.BEATAPI_FREE_CATALOG_URL || 'https://api.beatapi.io/v1/free-tier',
+  requiredModel = 'deepseek-v4.1-flash-free',
+  fetchImpl = fetch,
+  force = false,
+  nowMs = Date.now(),
+  timeoutMs = 5000,
+} = {}) {
+  if (!force && state.beatApiCatalogCache.models && nowMs < state.beatApiCatalogCache.expiresAt) {
+    const hasModel = state.beatApiCatalogCache.models.includes(requiredModel);
+    return hasModel
+      ? { ok: true, cached: true, models: state.beatApiCatalogCache.models }
+      : { ok: false, cached: true, code: 'AI_BEATAPI_FREE_WITHDRAWN', reason: `Model "${requiredModel}" tidak lagi tersedia di katalog gratis BeatAPI.` };
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(catalogUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        code: 'AI_CATALOG_UNAVAILABLE',
+        status: res.status,
+        reason: `Katalog gratis BeatAPI mengembalikan HTTP ${res.status} (fail-closed).`,
+      };
+    }
+    const payload = await res.json().catch(() => null);
+    const rawList = Array.isArray(payload)
+      ? payload
+      : (Array.isArray(payload?.models)
+        ? payload.models
+        : (Array.isArray(payload?.data) ? payload.data : []));
+    const modelIds = rawList
+      .map((item) => (typeof item === 'string' ? item : (item?.id || item?.model || '')))
+      .filter(Boolean);
+
+    const ttlMs = parseCacheControlMaxAgeMs(res.headers, 60_000);
+    const hasModel = modelIds.includes(requiredModel);
+    state.beatApiCatalogCache = {
+      fetchedAt: nowMs,
+      expiresAt: nowMs + ttlMs,
+      models: modelIds,
+      withdrawn: !hasModel,
+    };
+
+    const entry = ensureModelQuota('beatapi', requiredModel);
+    entry.enabled = hasModel;
+
+    if (!hasModel) {
+      return {
+        ok: false,
+        cached: false,
+        code: 'AI_BEATAPI_FREE_WITHDRAWN',
+        models: modelIds,
+        reason: `Model "${requiredModel}" tidak ditemukan pada katalog gratis BeatAPI; provider dinonaktifkan otomatis.`,
+      };
+    }
+    return { ok: true, cached: false, models: modelIds };
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'AI_CATALOG_UNAVAILABLE',
+      reason: `Gagal menghubungi katalog gratis BeatAPI (fail-closed): ${err?.message || 'network error'}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// BeatAPI 1-successful-request-per-minute account-level controller with in-flight lock.
+export function acquireBeatApiMinuteSlot({ nowMs = Date.now() } = {}) {
+  if (state.beatApiRateSlot.inFlight) {
+    return {
+      ok: false,
+      code: 'AI_RATE_LIMIT',
+      retryAfterSeconds: 60,
+      until: new Date(nowMs + 60_000).toISOString(),
+      reason: 'Permintaan BeatAPI lain sedang berjalan (batas 1 permintaan sukses per menit per akun).',
+    };
+  }
+  if (state.beatApiRateSlot.nextAllowedAt > nowMs) {
+    const remainingSec = Math.ceil((state.beatApiRateSlot.nextAllowedAt - nowMs) / 1000);
+    return {
+      ok: false,
+      code: 'AI_RATE_LIMIT',
+      retryAfterSeconds: remainingSec,
+      until: new Date(state.beatApiRateSlot.nextAllowedAt).toISOString(),
+      reason: `Batas 1 permintaan sukses/menit BeatAPI aktif; tunggu ${remainingSec} detik.`,
+    };
+  }
+  state.beatApiRateSlot.inFlight = true;
+  return { ok: true };
+}
+
+export function commitBeatApiSuccess({ nowMs = Date.now(), windowMs = 60_000 } = {}) {
+  state.beatApiRateSlot.inFlight = false;
+  state.beatApiRateSlot.lastSuccessAt = nowMs;
+  state.beatApiRateSlot.nextAllowedAt = nowMs + windowMs;
+}
+
+export function releaseBeatApiSlot({ cooldownMs = 0, nowMs = Date.now() } = {}) {
+  state.beatApiRateSlot.inFlight = false;
+  if (cooldownMs > 0) {
+    state.beatApiRateSlot.nextAllowedAt = Math.max(state.beatApiRateSlot.nextAllowedAt, nowMs + cooldownMs);
+  }
 }
 
 // Queries OpenRouter official key endpoint (/api/v1/key) to retrieve real account-level limits.

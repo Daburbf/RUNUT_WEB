@@ -26,7 +26,16 @@ Diverifikasi langsung terhadap katalog publik OpenRouter (`GET https://openroute
 | OpenRouter | `openrouter/free` | `0` | `0` | `200,000` | Ya / Ya | Aktif (Fallback 3) | **Diblokir** untuk dokumen rahasia (routing dinamis) |
 | OpenRouter | `nvidia/nemotron-3-ultra-550b-a55b:free` | `0` | `0` | `1,000,000` | **Tidak** / **Tidak** | **Nonaktif** (`ENABLE_NEMOTRON_FREE=false`) | **Diblokir keras** (peringatan penggunaan data) |
 | Google AI Studio | `gemini-3.1-flash-lite` | Free Tier | Free Tier | Sesuai proyek | Ya | Aktif (Provider Independen & Stage B Validation) | **Diblokir** untuk dokumen rahasia tanpa persetujuan eksplisit |
+| Token Harbor | `deepseek-v4.1-flash:free` | `0` (rolling 7×24 jam value-based) | `0` (rolling 7×24 jam value-based) | Sesuai katalog | Ya (fallback JSON prompt) | **Nonaktif** (`ENABLE_TOKEN_HARBOR_FREE=false`) | **Diblokir keras** untuk dokumen rahasia; wajib `ALLOW_THIRD_PARTY_FREE_AI_PROCESSING=true` / catatan persetujuan aktif |
+| BeatAPI | `deepseek-v4.1-flash-free` | `0` (1 req sukses/menit pra top-up) | `0` (1 req sukses/menit pra top-up) | Sesuai katalog | Ya (fallback JSON prompt) | **Nonaktif** (`ENABLE_BEATAPI_FREE=false`) | **Diblokir keras** untuk dokumen rahasia; wajib `ALLOW_THIRD_PARTY_FREE_AI_PROCESSING=true` / catatan persetujuan aktif |
 | Groq | *(dinonaktifkan)* | — | — | — | — | **Nonaktif** (`ENABLE_GROQ_FREE=false`) | `llama-3.3-70b-versatile` (retired 16 Agu 2026) diblokir keras (`AI_DEPRECATED_MODEL_BLOCKED`) |
+
+### Rute DeepSeek V4.1 Flash Gratis & Proteksi Paid Sibling / V4 Pro
+* **Token Harbor (`https://tokenharbor.ai/v1`):** Hanya mengizinkan `deepseek-v4.1-flash:free`; preflight wajib ke `GET https://tokenharbor.ai/api/cli/free-tier` (`models_enabled === true`, `exhausted === false`, `models` memuat `deepseek-v4.1-flash:free`, memakai `reset_at` asli dari provider untuk cooldown rolling 7×24 jam, fail-closed bila endpoint tak terjangkau). Paid sibling `deepseek-v4.1-flash-1017` diblokir keras (`AI_PAID_MODEL_BLOCKED`).
+* **BeatAPI (`https://direct.beatapi.io/v1`):** Hanya mengizinkan `deepseek-v4.1-flash-free`; preflight wajib ke `GET https://api.beatapi.io/v1/free-tier` (menonaktifkan provider otomatis bila model ditarik) + pengunci 1 permintaan sukses/menit per akun (`acquireBeatApiMinuteSlot`) + penanganan `Retry-After` pada HTTP 429 tanpa loop retry. Paid sibling `deepseek-v4.1-flash` diblokir keras (`AI_PAID_MODEL_BLOCKED`).
+* **DeepSeek V4 Pro:** `deepseek-v4-pro`, `deepseek-v4-pro-0813`, dan seluruh alias V4 Pro diblokir keras di mode gratis (`AI_PAID_MODEL_BLOCKED`); tidak ada klaim bahwa V4 Pro gratis.
+* **Skrip Benchmark Terulang:** `scripts/benchmark-free-models.mjs` disiapkan untuk evaluasi sampel non-rahasia bahasa Indonesia & Inggris (status saat ini: belum dijalankan live karena kunci API pihak ketiga tidak diisi; tidak ada skor yang dikarang).
+* **Keterbatasan Akses Gratis:** Akses gratis dari semua provider pihak ketiga dapat dibatasi atau dihentikan sewaktu-waktu dan tidak diklaim permanen.
 
 ---
 
@@ -84,9 +93,9 @@ Diimplementasikan di `server/src/services/templatePreservationEngine.js` dan `se
 
 | Kategori | Status | Bukti Terukur |
 |---|---|---|
-| **Locally Verified — Full Backend Suite** | **PASS** | `npm.cmd --prefix server test`: **213 total — 209 passed, 0 failed, 4 conditionally skipped** (`postgres.test.js` live PG, `windows-document-processing.test.js` `2b` & `3b` live LibreOffice, `oci-object-storage.test.js` opt-in live OCI) dalam 12.17 s. |
-| **Locally Verified — Targeted New & AI/Preservation Suites** | **PASS** | `free-multimodel-and-template-preservation.test.js` (10/10), `zero-cost-ai-policy.test.js` (3/3), `ai-provider-fallback.test.js` (10/10), `document-preservation.test.js` (4/4), `template-preservation-complete.test.js` (5/5), `render-neon-simple-deploy.test.js` (3/3), `app.test.js` + `security-and-acceptance.test.js` (24/24) = **59/59 passed**. |
-| **Locally Verified — Frontend Production Build** | **PASS** | `npm.cmd run build` (`vite build`): **59 modules transformed** dalam 3.82 s, 0 secret di `dist/`. |
+| **Locally Verified — Full Backend Suite** | **PASS** | `npm.cmd --prefix server test`: **219 total — 214 passed, 0 failed, 5 conditionally skipped** (live PG, 2 live LibreOffice lokal Windows, 1 opt-in live OCI, 1 opt-in live DeepSeek free smoke test) dalam 10.05 s. |
+| **Locally Verified — DeepSeek Free & Multi-Model Suites** | **PASS** | `deepseek-free-api-providers.test.js` (5/5 deterministic passed, 1 opt-in live smoke skipped), `free-multimodel-and-template-preservation.test.js` (10/10), `zero-cost-ai-policy.test.js` (3/3), `ai-provider-fallback.test.js` (10/10). |
+| **Locally Verified — Frontend Production Build** | **PASS** | `npm.cmd run build` (`vite build`): **59 modules transformed** dalam 2.32 s, 0 secret di `dist/`. |
 | **CI Verified** | **Pending Push / Run** | Akan diverifikasi pada commit push terbaru di GitHub Actions (`.github/workflows/ci.yml`). |
 | **Deployed** | **Not Yet Deployed** | Belum di-deploy ke Render / Cloudflare Pages / Neon dari sesi lokal ini. |
 | **Remotely Verified** | **Not Yet Verified** | Menunggu deploy publik dan verifikasi URL live. |

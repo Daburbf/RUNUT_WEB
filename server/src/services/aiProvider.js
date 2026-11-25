@@ -29,12 +29,24 @@ import {
   DEFAULT_GEMINI_BASE_URL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_GROQ_BASE_URL,
+  DEFAULT_TOKEN_HARBOR_BASE_URL,
+  DEFAULT_TOKEN_HARBOR_ALLOWANCE_URL,
+  DEFAULT_TOKEN_HARBOR_FREE_MODEL,
+  DEFAULT_BEATAPI_BASE_URL,
+  DEFAULT_BEATAPI_FREE_CATALOG_URL,
+  DEFAULT_BEATAPI_FREE_MODEL,
   DEPRECATED_MODELS,
+  PAID_MODEL_BLOCKLIST,
   ALLOWED_OPENROUTER_FREE_MODELS,
+  ALLOWED_TOKEN_HARBOR_FREE_MODELS,
+  ALLOWED_BEATAPI_FREE_MODELS,
   FREE_PROVIDER_ALLOWLIST,
   PAID_PROVIDER_BLOCKLIST,
   FREE_MODEL_REGISTRY,
+  isBlockedPaidModel,
   verifyOpenRouterCatalogEntry,
+  verifyTokenHarborModelId,
+  verifyBeatApiModelId,
   isModelEligibleForPrivacy,
   getFreeModelRegistrySnapshot,
 } from './aiModelRegistry.js';
@@ -45,6 +57,11 @@ import {
   isOpenRouterAccountExhausted,
   getEarliestCooldownResetIso,
   parseRateLimitHeaders,
+  checkTokenHarborFreeAllowance,
+  checkBeatApiFreeCatalog,
+  acquireBeatApiMinuteSlot,
+  commitBeatApiSuccess,
+  releaseBeatApiSlot,
 } from './aiQuota.js';
 
 export {
@@ -58,9 +75,18 @@ export {
   DEFAULT_GEMINI_BASE_URL,
   DEFAULT_GEMINI_MODEL,
   DEFAULT_GROQ_BASE_URL,
+  DEFAULT_TOKEN_HARBOR_BASE_URL,
+  DEFAULT_TOKEN_HARBOR_ALLOWANCE_URL,
+  DEFAULT_TOKEN_HARBOR_FREE_MODEL,
+  DEFAULT_BEATAPI_BASE_URL,
+  DEFAULT_BEATAPI_FREE_CATALOG_URL,
+  DEFAULT_BEATAPI_FREE_MODEL,
   FREE_PROVIDER_ALLOWLIST,
   ALLOWED_OPENROUTER_FREE_MODELS,
+  ALLOWED_TOKEN_HARBOR_FREE_MODELS,
+  ALLOWED_BEATAPI_FREE_MODELS,
   DEPRECATED_MODELS,
+  PAID_MODEL_BLOCKLIST,
   FREE_MODEL_REGISTRY,
   getFreeModelRegistrySnapshot,
 };
@@ -152,9 +178,16 @@ export function assertFreeModelPolicy(provider, model, env = process.env, { base
 
   if (!isStrictFreeOnly(env)) return;
 
+  if (isBlockedPaidModel(m)) {
+    throw new AiError(
+      `Model berbayar atau V4 Pro belum terverifikasi gratis ("${m}") diblokir oleh kebijakan zero-cost (STRICT_FREE_AI_ONLY=true).`,
+      { code: 'AI_PAID_MODEL_BLOCKED', status: 503, retryable: false, provider: p, model: m },
+    );
+  }
+
   if (PAID_PROVIDER_BLOCKLIST.has(p) || !FREE_PROVIDER_ALLOWLIST.has(p)) {
     throw new AiError(
-      `Provider AI berbayar "${p}" diblokir oleh kebijakan zero-cost (STRICT_FREE_AI_ONLY=true). Gunakan OpenRouter (:free / openrouter/free) atau Google Gemini Free Tier.`,
+      `Provider AI berbayar "${p}" diblokir oleh kebijakan zero-cost (STRICT_FREE_AI_ONLY=true). Gunakan OpenRouter (:free / openrouter/free), Google Gemini Free Tier, atau rute DeepSeek V4.1 Flash gratis terverifikasi.`,
       { code: 'AI_PAID_PROVIDER_BLOCKED', status: 503, retryable: false, provider: p, model: m },
     );
   }
@@ -166,6 +199,44 @@ export function assertFreeModelPolicy(provider, model, env = process.env, { base
         code: check.code,
         status: 503,
         retryable: check.code === 'AI_MODEL_UNAVAILABLE',
+        provider: p,
+        model: m,
+      });
+    }
+  }
+
+  if (p === 'tokenharbor') {
+    if (String(env.ENABLE_TOKEN_HARBOR_FREE || 'false').trim().toLowerCase() !== 'true') {
+      throw new AiError(
+        'Provider Token Harbor dinonaktifkan (ENABLE_TOKEN_HARBOR_FREE=false).',
+        { code: 'AI_PROVIDER_DISABLED', status: 503, retryable: false, provider: p, model: m },
+      );
+    }
+    const check = verifyTokenHarborModelId(m);
+    if (!check.ok) {
+      throw new AiError(check.reason, {
+        code: check.code,
+        status: 503,
+        retryable: false,
+        provider: p,
+        model: m,
+      });
+    }
+  }
+
+  if (p === 'beatapi') {
+    if (String(env.ENABLE_BEATAPI_FREE || 'false').trim().toLowerCase() !== 'true') {
+      throw new AiError(
+        'Provider BeatAPI dinonaktifkan (ENABLE_BEATAPI_FREE=false).',
+        { code: 'AI_PROVIDER_DISABLED', status: 503, retryable: false, provider: p, model: m },
+      );
+    }
+    const check = verifyBeatApiModelId(m);
+    if (!check.ok) {
+      throw new AiError(check.reason, {
+        code: check.code,
+        status: 503,
+        retryable: false,
         provider: p,
         model: m,
       });
@@ -189,6 +260,20 @@ const PROVIDERS = {
     label: 'OpenRouter (Free)',
     requiresApiKey: true,
     defaultBaseUrl: DEFAULT_OPENROUTER_BASE_URL,
+    supportsResponseFormat: true,
+    endpoint: (baseUrl) => `${baseUrl}/chat/completions`,
+  },
+  tokenharbor: {
+    label: 'Token Harbor (DeepSeek V4.1 Flash Free)',
+    requiresApiKey: true,
+    defaultBaseUrl: DEFAULT_TOKEN_HARBOR_BASE_URL,
+    supportsResponseFormat: true,
+    endpoint: (baseUrl) => `${baseUrl}/chat/completions`,
+  },
+  beatapi: {
+    label: 'BeatAPI (DeepSeek V4.1 Flash Free)',
+    requiresApiKey: true,
+    defaultBaseUrl: DEFAULT_BEATAPI_BASE_URL,
     supportsResponseFormat: true,
     endpoint: (baseUrl) => `${baseUrl}/chat/completions`,
   },
@@ -254,6 +339,14 @@ function resolvePrimaryConfig(env = process.env) {
     baseUrl = String(env.OPENROUTER_BASE_URL || env.AI_BASE_URL || impl.defaultBaseUrl).replace(/\/$/, '');
     apiKey = env.OPENROUTER_API_KEY || env.AI_API_KEY || '';
     model = env.OPENROUTER_PRIMARY_MODEL || env.OPENROUTER_MODEL || env.AI_MODEL || DEFAULT_OPENROUTER_PRIMARY_MODEL;
+  } else if (provider === 'tokenharbor') {
+    baseUrl = String(env.TOKEN_HARBOR_BASE_URL || env.AI_BASE_URL || impl.defaultBaseUrl).replace(/\/$/, '');
+    apiKey = env.TOKEN_HARBOR_API_KEY || env.AI_API_KEY || '';
+    model = env.TOKEN_HARBOR_FREE_MODEL || env.AI_MODEL || DEFAULT_TOKEN_HARBOR_FREE_MODEL;
+  } else if (provider === 'beatapi') {
+    baseUrl = String(env.BEATAPI_BASE_URL || env.AI_BASE_URL || impl.defaultBaseUrl).replace(/\/$/, '');
+    apiKey = env.BEATAPI_API_KEY || env.AI_API_KEY || '';
+    model = env.BEATAPI_FREE_MODEL || env.AI_MODEL || DEFAULT_BEATAPI_FREE_MODEL;
   } else if (provider === 'gemini') {
     baseUrl = String(env.GEMINI_BASE_URL || env.AI_BASE_URL || impl.defaultBaseUrl).replace(/\/$/, '');
     apiKey = env.GEMINI_API_KEY || env.AI_API_KEY || '';
@@ -308,6 +401,26 @@ function resolveFallbackChain(primary, env = process.env) {
   // 1. Additional OpenRouter free model variants (ERNIE -> Ling -> OpenRouter Free Router -> optional Nemotron)
   if (primary.provider === 'openrouter') {
     chain.push(...buildOpenRouterFallbackModels(primary.model, env));
+  }
+
+  // 1b. Optional Verified Free DeepSeek V4.1 Flash: Token Harbor (opt-in only)
+  if (primary.provider !== 'tokenharbor' && String(env.ENABLE_TOKEN_HARBOR_FREE || 'false').trim().toLowerCase() === 'true') {
+    const apiKey = String(env.TOKEN_HARBOR_API_KEY || '').trim();
+    const model = String(env.TOKEN_HARBOR_FREE_MODEL || DEFAULT_TOKEN_HARBOR_FREE_MODEL).trim();
+    const baseUrl = String(env.TOKEN_HARBOR_BASE_URL || DEFAULT_TOKEN_HARBOR_BASE_URL).replace(/\/$/, '');
+    if (apiKey && model) {
+      chain.push(makeCandidate('tokenharbor', model, baseUrl, apiKey, timeoutMs));
+    }
+  }
+
+  // 1c. Optional Verified Free DeepSeek V4.1 Flash: BeatAPI (opt-in only)
+  if (primary.provider !== 'beatapi' && String(env.ENABLE_BEATAPI_FREE || 'false').trim().toLowerCase() === 'true') {
+    const apiKey = String(env.BEATAPI_API_KEY || '').trim();
+    const model = String(env.BEATAPI_FREE_MODEL || DEFAULT_BEATAPI_FREE_MODEL).trim();
+    const baseUrl = String(env.BEATAPI_BASE_URL || DEFAULT_BEATAPI_BASE_URL).replace(/\/$/, '');
+    if (apiKey && model) {
+      chain.push(makeCandidate('beatapi', model, baseUrl, apiKey, timeoutMs));
+    }
   }
 
   // 2. Independent Provider: Google Gemini Free Tier
@@ -529,8 +642,11 @@ async function invokeSingleProvider(cfg, {
     headers['X-Title'] = 'Runut AI Writing Analysis';
   }
 
-  // Never retry failed OpenRouter requests on the same model (failed requests may consume the 50/day free limit)
-  const effectiveMaxRetries = cfg.provider === 'openrouter' ? 0 : Math.max(0, Math.min(2, Number(maxRetries) || 0));
+  // Never retry failed requests on OpenRouter, Token Harbor, or BeatAPI on the same model
+  // to avoid burning shared free allowance or triggering ambiguous paid-path retries.
+  const effectiveMaxRetries = ['openrouter', 'tokenharbor', 'beatapi'].includes(cfg.provider)
+    ? 0
+    : Math.max(0, Math.min(2, Number(maxRetries) || 0));
   let attempt = 0;
   let allowResponseFormat = Boolean(useResponseFormat && cfg.supportsResponseFormat);
 
@@ -647,6 +763,7 @@ export async function callStructuredAi({
   fetchImpl = fetch,
   confidential = false,
   userConsentForFreeTier = false,
+  thirdPartyFreeConsent = null,
   preferredProvider = null,
   nowMs = Date.now(),
 } = {}, env = process.env) {
@@ -701,10 +818,12 @@ export async function callStructuredAi({
     if (attemptsMade >= maxProviderAttempts) break;
     if (authFailedProviders.has(candidate.provider)) continue;
 
-    // Privacy gate: skip providers prohibited for confidential/personal documents
+    // Privacy gate: skip providers prohibited for confidential/personal documents or missing consent
     const privacy = isModelEligibleForPrivacy(candidate.provider, candidate.model, {
       confidential,
       userConsentForFreeTier,
+      thirdPartyFreeConsent,
+      env,
     });
     if (!privacy.eligible) {
       skippedForPrivacy += 1;
@@ -726,11 +845,75 @@ export async function callStructuredAi({
 
     // Enforce zero-cost policy on every candidate before touching network
     try {
-      assertFreeModelPolicy(candidate.provider, candidate.model, env);
+      assertFreeModelPolicy(candidate.provider, candidate.model, env, { baseUrl: candidate.baseUrl });
     } catch (policyErr) {
       errors.push({ provider: candidate.provider, model: candidate.model, err: policyErr });
       if (candidate.isPrimary && candidates.length === 1) throw policyErr;
       continue;
+    }
+
+    // Mandatory preflight checks for Token Harbor (allowance) and BeatAPI (free catalog + 1 req/min lock)
+    let beatApiLocked = false;
+    if (candidate.provider === 'tokenharbor') {
+      const preflight = await checkTokenHarborFreeAllowance({
+        apiKey: candidate.apiKey,
+        allowanceUrl: env.TOKEN_HARBOR_ALLOWANCE_URL || DEFAULT_TOKEN_HARBOR_ALLOWANCE_URL,
+        requiredModel: candidate.model,
+        fetchImpl,
+        nowMs,
+      });
+      if (!preflight.ok) {
+        const pfErr = new AiError(preflight.reason || 'Preflight Token Harbor gagal.', {
+          code: preflight.code || 'AI_ALLOWANCE_UNAVAILABLE',
+          status: preflight.code === 'AI_QUOTA_EXHAUSTED' ? 429 : 503,
+          retryable: true,
+          provider: candidate.provider,
+          model: candidate.model,
+          estimatedRetryAt: preflight.reset_at || null,
+        });
+        if (!primaryError && candidate.isPrimary) primaryError = pfErr;
+        errors.push({ provider: candidate.provider, model: candidate.model, err: pfErr });
+        continue;
+      }
+    }
+
+    if (candidate.provider === 'beatapi') {
+      const catalogCheck = await checkBeatApiFreeCatalog({
+        catalogUrl: env.BEATAPI_FREE_CATALOG_URL || DEFAULT_BEATAPI_FREE_CATALOG_URL,
+        requiredModel: candidate.model,
+        fetchImpl,
+        nowMs,
+      });
+      if (!catalogCheck.ok) {
+        const catErr = new AiError(catalogCheck.reason || 'Katalog gratis BeatAPI tidak tersedia.', {
+          code: catalogCheck.code || 'AI_CATALOG_UNAVAILABLE',
+          status: 503,
+          retryable: true,
+          provider: candidate.provider,
+          model: candidate.model,
+        });
+        if (!primaryError && candidate.isPrimary) primaryError = catErr;
+        errors.push({ provider: candidate.provider, model: candidate.model, err: catErr });
+        continue;
+      }
+
+      const slot = acquireBeatApiMinuteSlot({ nowMs });
+      if (!slot.ok) {
+        const slotErr = new AiError(slot.reason, {
+          code: 'AI_RATE_LIMIT',
+          status: 429,
+          retryable: true,
+          provider: candidate.provider,
+          model: candidate.model,
+          retryAfter: slot.retryAfterSeconds,
+          estimatedRetryAt: slot.until,
+        });
+        if (!primaryError && candidate.isPrimary) primaryError = slotErr;
+        errors.push({ provider: candidate.provider, model: candidate.model, err: slotErr });
+        skippedForCooldown += 1;
+        continue;
+      }
+      beatApiLocked = true;
     }
 
     attemptsMade += 1;
@@ -746,6 +929,10 @@ export async function callStructuredAi({
         fetchImpl,
       });
       const parsed = extractJson(out.content);
+      if (beatApiLocked) {
+        commitBeatApiSuccess({ nowMs });
+        beatApiLocked = false;
+      }
       recordAiRequest({
         provider: out.provider,
         model: out.model,
@@ -764,6 +951,11 @@ export async function callStructuredAi({
         usage: out.usage,
       };
     } catch (err) {
+      if (beatApiLocked) {
+        const cdMs = err?.retryAfter ? err.retryAfter * 1000 : (err?.code === 'AI_RATE_LIMIT' ? 60_000 : 0);
+        releaseBeatApiSlot({ cooldownMs: cdMs, nowMs });
+        beatApiLocked = false;
+      }
       if (!primaryError && candidate.isPrimary) primaryError = err;
       errors.push({ provider: candidate.provider, model: candidate.model, err });
       recordAiRequest({

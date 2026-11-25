@@ -55,7 +55,7 @@
 
 | Tier | Status | Evidence |
 | --- | --- | --- |
-| **1. Locally Verified** | **PASS** | Full backend suite (`npm.cmd --prefix server test`): **213 total — 209 passed, 0 failed, 4 conditionally skipped** (`postgres.test.js` live PG, `windows-document-processing.test.js` live `DOC->DOCX` & `DOCX->PDF`, `oci-object-storage.test.js` opt-in live OCI); includes 10 new multi-model & 3-stage template preservation tests; `vite build` passed in 3.82 s (59 modules, 0 secrets in `dist/`). |
+| **1. Locally Verified** | **PASS** | Full backend suite (`npm.cmd --prefix server test`): **219 total — 214 passed, 0 failed, 5 conditionally skipped** (`postgres.test.js` live PG, `windows-document-processing.test.js` live `DOC->DOCX` & `DOCX->PDF`, `oci-object-storage.test.js` opt-in live OCI, `deepseek-free-api-providers.test.js` opt-in live smoke); includes Token Harbor & BeatAPI free DeepSeek V4.1 Flash adapters; `vite build` passed in 2.32 s (59 modules, 0 secrets in `dist/`). |
 | **2. CI Verified** | **Configured (Pending Push)** | `.github/workflows/ci.yml` verifies live PostgreSQL v8 (`schema_version >= 8`), live Ubuntu LibreOffice, Windows native tests, production smoke E2E, Semgrep, Gitleaks, Trivy, and `oci-object-storage.test.js`. |
 | **3. OCI Integration Verified** | **Not Yet Run (Opt-In)** | Live OCI test (`OCI 5`) is gated by `RUNUT_OCI_OBJECT_STORAGE_TEST=true` and requires real OCI test bucket credentials. |
 | **4. Deployed** | **Not Yet Deployed** | Cloud dashboard provisioning on Neon, OCI, DuckDNS, and Cloudflare Pages has not been executed from this local machine. No public URL is fabricated. |

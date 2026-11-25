@@ -14,12 +14,29 @@ export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 export const DEFAULT_GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 
+// Verified Free DeepSeek V4.1 Flash API Providers (disabled by default; require opt-in & consent)
+export const DEFAULT_TOKEN_HARBOR_BASE_URL = 'https://tokenharbor.ai/v1';
+export const DEFAULT_TOKEN_HARBOR_ALLOWANCE_URL = 'https://tokenharbor.ai/api/cli/free-tier';
+export const DEFAULT_TOKEN_HARBOR_FREE_MODEL = 'deepseek-v4.1-flash:free';
+
+export const DEFAULT_BEATAPI_BASE_URL = 'https://direct.beatapi.io/v1';
+export const DEFAULT_BEATAPI_FREE_CATALOG_URL = 'https://api.beatapi.io/v1/free-tier';
+export const DEFAULT_BEATAPI_FREE_MODEL = 'deepseek-v4.1-flash-free';
+
 // Explicitly retired/deprecated models that MUST be rejected.
 export const DEPRECATED_MODELS = new Map([
   ['llama-3.3-70b-versatile', 'Model llama-3.3-70b-versatile telah dihentikan (retired) oleh Groq pada 16 Agustus 2026 dan tidak boleh digunakan lagi.'],
 ]);
 
-// Explicitly permitted free OpenRouter model IDs.
+// Explicitly blocked paid siblings and unverified DeepSeek V4 Pro models.
+export const PAID_MODEL_BLOCKLIST = new Set([
+  'deepseek-v4.1-flash-1017',
+  'deepseek-v4.1-flash',
+  'deepseek-v4-pro',
+  'deepseek-v4-pro-0813',
+]);
+
+// Explicitly permitted free model IDs per provider.
 export const ALLOWED_OPENROUTER_FREE_MODELS = new Set([
   DEFAULT_OPENROUTER_PRIMARY_MODEL,
   DEFAULT_OPENROUTER_FALLBACK_1,
@@ -27,9 +44,18 @@ export const ALLOWED_OPENROUTER_FREE_MODELS = new Set([
   DEFAULT_OPENROUTER_DYNAMIC_MODEL,
   OPTIONAL_OPENROUTER_NEMOTRON_MODEL,
 ]);
+export const ALLOWED_TOKEN_HARBOR_FREE_MODELS = new Set([DEFAULT_TOKEN_HARBOR_FREE_MODEL]);
+export const ALLOWED_BEATAPI_FREE_MODELS = new Set([DEFAULT_BEATAPI_FREE_MODEL]);
 
 // Providers permitted under STRICT_FREE_AI_ONLY=true (9router kept for local test stubs).
-export const FREE_PROVIDER_ALLOWLIST = new Set(['openrouter', 'gemini', 'groq', '9router']);
+export const FREE_PROVIDER_ALLOWLIST = new Set([
+  'openrouter',
+  'tokenharbor',
+  'beatapi',
+  'gemini',
+  'groq',
+  '9router',
+]);
 
 // Paid providers explicitly prohibited under zero-cost policy.
 export const PAID_PROVIDER_BLOCKLIST = new Set([
@@ -140,6 +166,48 @@ export const FREE_MODEL_REGISTRY = Object.freeze([
     dailyResetSchedule: 'midnight_pacific',
     documentedLimits: { scope: 'google_project_free_tier', reset: 'midnight_pacific' },
     enabledByDefault: true,
+  },
+  {
+    id: 'tokenharbor:deepseek-v4.1-flash-free',
+    provider: 'tokenharbor',
+    model: DEFAULT_TOKEN_HARBOR_FREE_MODEL,
+    role: 'optional_deepseek_free',
+    priority: 7,
+    free: true,
+    supportsResponseFormat: true,
+    supportsStructuredJson: true,
+    allowConfidential: false, // Token Harbor free route may retain prompts/responses and be read by staff
+    requiresUserConsentForTraining: true,
+    requiresThirdPartyFreeConsent: true,
+    dataUsePolicy: 'Token Harbor free-route prompts and responses may be retained, read by staff, and processed by upstream providers; strictly prohibited for confidential or personal documents.',
+    sharedAccountQuota: true,
+    documentedLimits: {
+      requestsPerMinute: 60,
+      requestsPerHour: 1800,
+      window: 'rolling_7x24h_value_based',
+      scope: 'tokenharbor_free_account',
+    },
+    enabledByDefault: false,
+  },
+  {
+    id: 'beatapi:deepseek-v4.1-flash-free',
+    provider: 'beatapi',
+    model: DEFAULT_BEATAPI_FREE_MODEL,
+    role: 'optional_deepseek_free',
+    priority: 8,
+    free: true,
+    supportsResponseFormat: true,
+    supportsStructuredJson: true,
+    allowConfidential: false, // Prohibited for confidential/personal documents prior to full retention review
+    requiresUserConsentForTraining: true,
+    requiresThirdPartyFreeConsent: true,
+    dataUsePolicy: 'BeatAPI free route requires explicit third-party free AI consent and is prohibited for confidential or personal documents.',
+    sharedAccountQuota: true,
+    documentedLimits: {
+      requestsPerMinute: 1,
+      scope: 'beatapi_free_account_pre_topup',
+    },
+    enabledByDefault: false,
   },
 ]);
 
@@ -265,11 +333,120 @@ export function getRegistryEntry(provider, model) {
   return FREE_MODEL_REGISTRY.find((e) => e.provider === p && e.model === m) || null;
 }
 
-export function isModelEligibleForPrivacy(provider, model, { confidential = false, userConsentForFreeTier = false } = {}) {
-  if (!confidential) return { eligible: true, reason: null };
+export function isBlockedPaidModel(modelId) {
+  const clean = String(modelId || '').trim().toLowerCase();
+  if (!clean) return false;
+  if (PAID_MODEL_BLOCKLIST.has(clean)) return true;
+  if (/deepseek-v4-pro/i.test(clean)) return true;
+  return false;
+}
 
+export function verifyTokenHarborModelId(modelId) {
+  const cleanId = String(modelId || '').trim();
+  if (!cleanId) {
+    return { ok: false, code: 'AI_INVALID_MODEL', reason: 'Model ID Token Harbor kosong.' };
+  }
+  if (isBlockedPaidModel(cleanId)) {
+    return {
+      ok: false,
+      code: 'AI_PAID_MODEL_BLOCKED',
+      reason: `Model berbayar "${cleanId}" diblokir pada Token Harbor. Hanya "${DEFAULT_TOKEN_HARBOR_FREE_MODEL}" yang diizinkan.`,
+    };
+  }
+  if (!ALLOWED_TOKEN_HARBOR_FREE_MODELS.has(cleanId)) {
+    return {
+      ok: false,
+      code: 'AI_UNKNOWN_MODEL_BLOCKED',
+      reason: `Model Token Harbor "${cleanId}" tidak diizinkan. Hanya "${DEFAULT_TOKEN_HARBOR_FREE_MODEL}" yang terdaftar sebagai rute gratis.`,
+    };
+  }
+  return { ok: true };
+}
+
+export function verifyBeatApiModelId(modelId) {
+  const cleanId = String(modelId || '').trim();
+  if (!cleanId) {
+    return { ok: false, code: 'AI_INVALID_MODEL', reason: 'Model ID BeatAPI kosong.' };
+  }
+  if (isBlockedPaidModel(cleanId)) {
+    return {
+      ok: false,
+      code: 'AI_PAID_MODEL_BLOCKED',
+      reason: `Model berbayar "${cleanId}" diblokir pada BeatAPI. Hanya "${DEFAULT_BEATAPI_FREE_MODEL}" yang diizinkan.`,
+    };
+  }
+  if (!ALLOWED_BEATAPI_FREE_MODELS.has(cleanId)) {
+    return {
+      ok: false,
+      code: 'AI_UNKNOWN_MODEL_BLOCKED',
+      reason: `Model BeatAPI "${cleanId}" tidak diizinkan. Hanya "${DEFAULT_BEATAPI_FREE_MODEL}" yang terdaftar sebagai rute gratis.`,
+    };
+  }
+  return { ok: true };
+}
+
+export function createThirdPartyConsentRecord({ provider, version = '1.0', grantedAt = new Date().toISOString() } = {}) {
+  return {
+    provider: String(provider || '').toLowerCase(),
+    version: String(version),
+    granted: true,
+    granted_at: grantedAt,
+    revoked_at: null,
+  };
+}
+
+export function revokeThirdPartyConsentRecord(record, revokedAt = new Date().toISOString()) {
+  if (!record || typeof record !== 'object') return null;
+  return {
+    ...record,
+    granted: false,
+    revoked_at: revokedAt,
+  };
+}
+
+export function hasValidThirdPartyConsent(provider, { thirdPartyFreeConsent = null, env = process.env } = {}) {
+  const p = String(provider || '').toLowerCase();
+  // Explicit user consent record takes precedence (including explicit revocation)
+  if (thirdPartyFreeConsent && typeof thirdPartyFreeConsent === 'object') {
+    if (thirdPartyFreeConsent.revoked_at || thirdPartyFreeConsent.granted === false) {
+      return false;
+    }
+    const matchesProvider = !thirdPartyFreeConsent.provider
+      || thirdPartyFreeConsent.provider === '*'
+      || thirdPartyFreeConsent.provider === p;
+    return Boolean(matchesProvider && thirdPartyFreeConsent.granted === true && thirdPartyFreeConsent.granted_at);
+  }
+  return String(env.ALLOW_THIRD_PARTY_FREE_AI_PROCESSING || 'false').trim().toLowerCase() === 'true';
+}
+
+export function isModelEligibleForPrivacy(provider, model, {
+  confidential = false,
+  userConsentForFreeTier = false,
+  thirdPartyFreeConsent = null,
+  env = process.env,
+} = {}) {
   const p = String(provider || '').toLowerCase();
   const m = String(model || '').trim();
+
+  // Third-party free DeepSeek routes (Token Harbor / BeatAPI) ALWAYS require explicit consent
+  // and are NEVER allowed for confidential/personal documents.
+  if (p === 'tokenharbor' || p === 'beatapi') {
+    if (confidential) {
+      return {
+        eligible: false,
+        reason: `Provider ${p} dilarang untuk dokumen rahasia, pribadi, akademik sensitif, atau korporat.`,
+      };
+    }
+    if (!hasValidThirdPartyConsent(p, { thirdPartyFreeConsent, env })) {
+      return {
+        eligible: false,
+        reason: `Provider ${p} memerlukan persetujuan eksplisit pengguna (ALLOW_THIRD_PARTY_FREE_AI_PROCESSING=true atau catatan persetujuan aktif).`,
+      };
+    }
+    return { eligible: true, reason: null };
+  }
+
+  if (!confidential) return { eligible: true, reason: null };
 
   // Dynamic model routing (openrouter/free) must not be used for confidential/personal documents.
   if (m === DEFAULT_OPENROUTER_DYNAMIC_MODEL) {
@@ -300,6 +477,10 @@ export function isModelEligibleForPrivacy(provider, model, { confidential = fals
 
 export function getFreeModelRegistrySnapshot(env = process.env) {
   const nemotronEnabled = String(env.ENABLE_NEMOTRON_FREE || 'false').trim().toLowerCase() === 'true';
+  const tokenHarborEnabled = String(env.ENABLE_TOKEN_HARBOR_FREE || 'false').trim().toLowerCase() === 'true'
+    && Boolean(String(env.TOKEN_HARBOR_API_KEY || '').trim());
+  const beatApiEnabled = String(env.ENABLE_BEATAPI_FREE || 'false').trim().toLowerCase() === 'true'
+    && Boolean(String(env.BEATAPI_API_KEY || '').trim());
   const groqEnabled = String(env.ENABLE_GROQ_FREE || 'false').trim().toLowerCase() === 'true'
     && String(env.GROQ_FREE_VERIFIED || 'false').trim().toLowerCase() === 'true'
     && Boolean(String(env.GROQ_API_KEY || '').trim())
@@ -309,13 +490,23 @@ export function getFreeModelRegistrySnapshot(env = process.env) {
   return {
     strict_free_ai_only: String(env.STRICT_FREE_AI_ONLY ?? 'true').trim().toLowerCase() !== 'false',
     deprecated_models_blocked: Array.from(DEPRECATED_MODELS.entries()).map(([model, reason]) => ({ model, reason })),
+    paid_models_blocked: Array.from(PAID_MODEL_BLOCKLIST),
     openrouter_allowed_models: Array.from(ALLOWED_OPENROUTER_FREE_MODELS),
+    tokenharbor_allowed_models: Array.from(ALLOWED_TOKEN_HARBOR_FREE_MODELS),
+    beatapi_allowed_models: Array.from(ALLOWED_BEATAPI_FREE_MODELS),
     catalog_cached_count: catalogCache.models.size,
     nemotron_enabled: nemotronEnabled,
+    tokenharbor_enabled: tokenHarborEnabled,
+    beatapi_enabled: beatApiEnabled,
     groq_enabled: groqEnabled,
+    allow_third_party_free_ai_processing: String(env.ALLOW_THIRD_PARTY_FREE_AI_PROCESSING || 'false').trim().toLowerCase() === 'true',
     models: FREE_MODEL_REGISTRY.map((m) => ({
       ...m,
-      enabled: m.model === OPTIONAL_OPENROUTER_NEMOTRON_MODEL ? nemotronEnabled : m.enabledByDefault,
+      enabled: m.model === OPTIONAL_OPENROUTER_NEMOTRON_MODEL
+        ? nemotronEnabled
+        : (m.provider === 'tokenharbor'
+          ? tokenHarborEnabled
+          : (m.provider === 'beatapi' ? beatApiEnabled : m.enabledByDefault)),
     })),
   };
 }

@@ -43,6 +43,7 @@
 - [ ] `ENABLE_NEMOTRON_FREE=false` (prohibited for confidential/personal documents)
 - [ ] `GEMINI_API_KEY=<key>` + `GEMINI_CONTENT_MODEL=gemini-3.1-flash-lite` (independent provider & Stage B validation)
 - [ ] `ENABLE_GROQ_FREE=false` (retired `llama-3.3-70b-versatile` removed; keep disabled unless account free tier is verified)
+- [ ] Optional Verified Free DeepSeek V4.1 Flash (disabled by default; prohibited for confidential documents): `ALLOW_THIRD_PARTY_FREE_AI_PROCESSING=false`, `ENABLE_TOKEN_HARBOR_FREE=false` (`TOKEN_HARBOR_BASE_URL=https://tokenharbor.ai/v1`, `TOKEN_HARBOR_FREE_MODEL=deepseek-v4.1-flash:free`), `ENABLE_BEATAPI_FREE=false` (`BEATAPI_BASE_URL=https://direct.beatapi.io/v1`, `BEATAPI_FREE_MODEL=deepseek-v4.1-flash-free`)
 - [ ] `STRICT_TEMPLATE_PRESERVATION=true`, `PRESERVE_ORIGINAL_DOCUMENT=true`, `ALLOW_TEMPLATE_REGENERATION=false`, `ALLOW_SILENT_FORMAT_CONVERSION=false`, `MAX_DOCUMENT_TEXT_GROWTH_RATIO=1.15`, `MAX_TEMPLATE_REPAIR_ATTEMPTS=1`
 - [ ] `DOCX_PDF_CONVERSION_ENABLED=true`
 - [ ] `DOCX_PDF_TIMEOUT_MS=120000`
