@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeWithProvider,
@@ -66,6 +66,10 @@ const baseEnv = {
   GEMINI_MODEL: 'gemini-3.1-flash-lite',
   AI_TIMEOUT_MS: '5000',
 };
+
+beforeEach(() => {
+  resetAiUsageForTest();
+});
 
 test('AI Provider: OpenRouter Particle-1 Free successful request & usage tracking', async () => {
   resetAiUsageForTest();

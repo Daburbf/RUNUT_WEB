@@ -430,6 +430,32 @@ export const MIGRATIONS = [
         for each row execute function set_updated_at();
     `,
   },
+  {
+    version: 9,
+    name: 'ai_provider_quota_tracking',
+    sql: `
+      create table if not exists ai_provider_quotas (
+        provider_id text not null,
+        model_id text not null,
+        remaining_requests integer,
+        remaining_tokens integer,
+        rate_limit_type text,
+        reset_timestamp timestamptz,
+        retry_after_seconds integer,
+        last_successful_request timestamptz,
+        last_failure timestamptz,
+        last_error text,
+        cooldown_until timestamptz,
+        enabled boolean not null default true,
+        updated_at timestamptz not null default now(),
+        primary key (provider_id, model_id)
+      );
+
+      drop trigger if exists trg_ai_provider_quotas_updated_at on ai_provider_quotas;
+      create trigger trg_ai_provider_quotas_updated_at before update on ai_provider_quotas
+        for each row execute function set_updated_at();
+    `,
+  },
 ];
 
 export async function runMigrations(pool) {

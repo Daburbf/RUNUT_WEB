@@ -279,13 +279,21 @@ async function prepareExportArtifact(doc, format) {
   const issues = analysis ? await issuesRepo.listByAnalysis(analysis.id) : [];
   const appliedIssues = issues.filter((i) => i.decision === 'applied');
   const text = doc.revised_text ?? buildRevised(doc.original_text, issues) ?? doc.original_text;
-  const safe = (doc.title || 'dokumen').replace(/[^\p{L}\p{N}\- ]+/gu, '').trim().slice(0, 80) || 'dokumen';
+  const rawBaseName = (doc.file_name ? doc.file_name.replace(/\.[^.]+$/, '') : (doc.title || 'dokumen'));
+  const safe = rawBaseName.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim().replace(/\s+/g, '_').slice(0, 80) || 'dokumen';
   const headers = {};
 
   if (format === 'docx') {
     const orig = await getOriginalUploadPersistent(doc.id, { userId: doc.user_id });
     if (orig && orig.ext === 'docx') {
       const edited = await applyDocxEdits(orig.buffer, { issueEdits: appliedIssues });
+      if (!edited.verification?.verified && String(process.env.STRICT_TEMPLATE_PRESERVATION ?? 'true') !== 'false') {
+        throw new HttpError(
+          422,
+          'Validasi preservasi template DOCX asli gagal. Dokumen tidak diubah demi menjaga struktur asli.',
+          { code: 'TEMPLATE_PRESERVATION_VALIDATION_FAILED', checks: edited.verification?.checks || null },
+        );
+      }
       const buf = validateExportBuffer('docx', edited.buffer);
       headers['X-Preservation-Mode'] = 'template-preserved';
       headers['X-Preservation-Status'] = 'docx_template_preserved';
@@ -294,7 +302,7 @@ async function prepareExportArtifact(doc, format) {
       return {
         buffer: buf,
         contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        filename: `${safe}-revisi.docx`,
+        filename: `${safe}_revised.docx`,
         headers,
       };
     }
@@ -346,7 +354,7 @@ async function prepareExportArtifact(doc, format) {
         headers['X-Preservation-Status'] = 'pdf_template_preserved';
         headers['X-Preservation-Classification'] = 'preserved';
         headers['X-Preservation-Verified'] = 'true';
-        return { buffer: buf, contentType: 'application/pdf', filename: `${safe}-revisi.pdf`, headers };
+        return { buffer: buf, contentType: 'application/pdf', filename: `${safe}_revised.pdf`, headers };
       }
 
       const edited = await applyPdfEdits(orig.buffer, appliedIssues);
@@ -360,7 +368,7 @@ async function prepareExportArtifact(doc, format) {
           headers['X-Preservation-Verified'] = String(edited.flagged_count === 0);
           headers['X-Visual-Similarity'] = String(visual.average_visual_similarity_percent);
           if (edited.recommend_docx) headers['X-Recommend-Docx'] = 'true';
-          return { buffer: buf, contentType: 'application/pdf', filename: `${safe}-revisi.pdf`, headers };
+          return { buffer: buf, contentType: 'application/pdf', filename: `${safe}_revised.pdf`, headers };
         }
         const buf = validateExportBuffer('pdf', orig.buffer);
         headers['X-Preservation-Mode'] = 'original-retained-validation-failed';
@@ -368,7 +376,7 @@ async function prepareExportArtifact(doc, format) {
         headers['X-Preservation-Classification'] = 'validation_failed';
         headers['X-Preservation-Verified'] = 'false';
         headers['X-Recommend-Docx'] = 'true';
-        return { buffer: buf, contentType: 'application/pdf', filename: `${safe}-revisi.pdf`, headers };
+        return { buffer: buf, contentType: 'application/pdf', filename: `${safe}_revised.pdf`, headers };
       }
 
       const buf = validateExportBuffer('pdf', orig.buffer);
@@ -378,7 +386,7 @@ async function prepareExportArtifact(doc, format) {
       headers['X-Preservation-Verified'] = 'false';
       headers['X-Unapplied-Edits'] = String(edited.flagged_count);
       headers['X-Recommend-Docx'] = 'true';
-      return { buffer: buf, contentType: 'application/pdf', filename: `${safe}-revisi.pdf`, headers };
+      return { buffer: buf, contentType: 'application/pdf', filename: `${safe}_revised.pdf`, headers };
     }
 
     if (orig && orig.ext === 'docx') {
@@ -390,7 +398,7 @@ async function prepareExportArtifact(doc, format) {
         headers['X-Preservation-Status'] = 'docx_pdf_conversion_success';
         headers['X-Preservation-Classification'] = editedDocx.verification?.classification || 'preserved';
         headers['X-Preservation-Verified'] = String(Boolean(editedDocx.verification?.verified));
-        return { buffer: buf, contentType: 'application/pdf', filename: `${safe}-revisi.pdf`, headers };
+        return { buffer: buf, contentType: 'application/pdf', filename: `${safe}_revised.pdf`, headers };
       }
       throw new HttpError(
         503,
@@ -425,7 +433,7 @@ async function prepareExportArtifact(doc, format) {
     });
     const buf = validateExportBuffer('pdf', rawPdf);
     headers['X-Preservation-Mode'] = 'generated-from-text';
-    return { buffer: buf, contentType: 'application/pdf', filename: `${safe}-revisi.pdf`, headers };
+    return { buffer: buf, contentType: 'application/pdf', filename: `${safe}_revised.pdf`, headers };
   }
 
   const buf = validateExportBuffer('txt', text);

@@ -15,8 +15,8 @@
 | **Frontend** | **Cloudflare Pages** | Free | Static Vite `dist/` on `https://<project>.pages.dev`, unlimited static bandwidth, zero credit card required |
 | **Same-Origin API Proxy** | **Cloudflare Pages Functions** (`functions/api/[[path]].js`) | Free | Proxies `/api/*` to fixed `BACKEND_ORIGIN=https://<actual-service>.onrender.com`, 100,000 requests/day free, preserves multiple `Set-Cookie` headers, strips upstream `Domain` |
 | **Backend + LibreOffice** | **Render Web Service** (`render.yaml` / `Dockerfile`) | Free | Node.js 24 + LibreOffice + Noto/DejaVu fonts + OCR; **512 MB RAM**, **750 free instance hours/mo**, sleeps after 15 min idle (~1 min cold start), ephemeral local disk, guarded by `MAX_CONCURRENT_CONVERSIONS=1` & `CONVERSION_MAX_RSS_MB=380` |
-| **Database + Document Storage** | **Neon PostgreSQL** (`OBJECT_STORAGE_PROVIDER=postgres`) | Free | **1 GB storage per project**, **100 CU-hours per project/mo**, **5 GB public network transfer per project/mo**, TLS, Migration v8; stores metadata + immutable `BYTEA` originals with **700 MB** storage & **4 GB/mo** outbound application-side safety limits |
-| **AI & Payments** | **OpenRouter (`:free`) -> Gemini Free -> Groq Free** + **Midtrans Sandbox** | Free / Sandbox | `STRICT_FREE_AI_ONLY=true`; `MIDTRANS_IS_PRODUCTION=false` |
+| **Database + Document Storage** | **Neon PostgreSQL** (`OBJECT_STORAGE_PROVIDER=postgres`) | Free | **1 GB storage per project**, **100 CU-hours per project/mo**, **5 GB public network transfer per project/mo**, TLS, Migration v9 (`ai_provider_quotas`); stores metadata + immutable `BYTEA` originals with **700 MB** storage & **4 GB/mo** outbound application-side safety limits |
+| **AI & Payments** | **OpenRouter Free Multi-Model (`particle-1` -> `ernie-5.5` -> `ling-3.2` -> `openrouter/free`) -> Gemini 3.1 Flash-Lite Free** + **Midtrans Sandbox** | Free / Sandbox | `STRICT_FREE_AI_ONLY=true`; `ENABLE_GROQ_FREE=false` (retired `llama-3.3-70b-versatile` removed); `STRICT_TEMPLATE_PRESERVATION=true`; `MIDTRANS_IS_PRODUCTION=false`. See [AI_FREE_PROVIDER_AND_TEMPLATE_PRESERVATION_REPORT.md](AI_FREE_PROVIDER_AND_TEMPLATE_PRESERVATION_REPORT.md) |
 
 ### Optional Higher-Capacity Alternative (Oracle Cloud Always Free + OCI Object Storage)
 | Component | Provider | Plan | Role & Published Free Allowance |
@@ -55,7 +55,7 @@
 
 | Tier | Status | Evidence |
 | --- | --- | --- |
-| **1. Locally Verified** | **PASS** | Full backend suite: **198 total — 194 passed, 0 failed, 4 conditionally skipped** (`postgres.test.js` live PG, `windows-document-processing.test.js` live `DOC->DOCX` & `DOCX->PDF`, `oci-object-storage.test.js` opt-in live OCI); `oci-object-storage.test.js` (4 passed, 1 opt-in skipped); `r2-quota-audit.test.js` (5/5 passed); `vite build` passed in 2.40 s. |
+| **1. Locally Verified** | **PASS** | Full backend suite (`npm.cmd --prefix server test`): **213 total — 209 passed, 0 failed, 4 conditionally skipped** (`postgres.test.js` live PG, `windows-document-processing.test.js` live `DOC->DOCX` & `DOCX->PDF`, `oci-object-storage.test.js` opt-in live OCI); includes 10 new multi-model & 3-stage template preservation tests; `vite build` passed in 3.82 s (59 modules, 0 secrets in `dist/`). |
 | **2. CI Verified** | **Configured (Pending Push)** | `.github/workflows/ci.yml` verifies live PostgreSQL v8 (`schema_version >= 8`), live Ubuntu LibreOffice, Windows native tests, production smoke E2E, Semgrep, Gitleaks, Trivy, and `oci-object-storage.test.js`. |
 | **3. OCI Integration Verified** | **Not Yet Run (Opt-In)** | Live OCI test (`OCI 5`) is gated by `RUNUT_OCI_OBJECT_STORAGE_TEST=true` and requires real OCI test bucket credentials. |
 | **4. Deployed** | **Not Yet Deployed** | Cloud dashboard provisioning on Neon, OCI, DuckDNS, and Cloudflare Pages has not been executed from this local machine. No public URL is fabricated. |

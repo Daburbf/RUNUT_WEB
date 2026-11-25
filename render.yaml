@@ -49,20 +49,44 @@ services:
         value: openrouter
       - key: STRICT_FREE_AI_ONLY
         value: "true"
+      - key: AI_FAILOVER_ENABLED
+        value: "true"
+      - key: AI_MAX_PROVIDER_ATTEMPTS
+        value: "4"
+      - key: AI_MAX_RETRIES_PER_PROVIDER
+        value: "1"
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_BASE_URL
         value: https://openrouter.ai/api/v1
-      - key: OPENROUTER_MODEL
+      - key: OPENROUTER_PRIMARY_MODEL
         value: particle-ai/particle-1:free
+      - key: OPENROUTER_FALLBACK_MODEL_1
+        value: baidu/ernie-5.5-flash-preview:free
+      - key: OPENROUTER_FALLBACK_MODEL_2
+        value: inclusionai/ling-3.2-flash:free
+      - key: OPENROUTER_DYNAMIC_MODEL
+        value: openrouter/free
+      - key: ENABLE_NEMOTRON_FREE
+        value: "false"
       - key: GEMINI_API_KEY
         sync: false
-      - key: GEMINI_MODEL
+      - key: GEMINI_CONTENT_MODEL
         value: gemini-3.1-flash-lite
-      - key: GROQ_API_KEY
-        sync: false
-      - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+      - key: ENABLE_GROQ_FREE
+        value: "false"
+      - key: STRICT_TEMPLATE_PRESERVATION
+        value: "true"
+      - key: PRESERVE_ORIGINAL_DOCUMENT
+        value: "true"
+      - key: ALLOW_TEMPLATE_REGENERATION
+        value: "false"
+      - key: ALLOW_SILENT_FORMAT_CONVERSION
+        value: "false"
+      - key: MAX_DOCUMENT_TEXT_GROWTH_RATIO
+        value: "1.15"
+      - key: MAX_TEMPLATE_REPAIR_ATTEMPTS
+        value: "1"
       - key: DOCX_PDF_CONVERSION_ENABLED
         value: "true"
       - key: GOOGLE_CLIENT_ID

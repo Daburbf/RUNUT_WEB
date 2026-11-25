@@ -19,7 +19,7 @@
   - **Option A — Vercel Hobby (Non-Commercial)**: Deploy Vite `dist/` via `vercel.json`, leave `VITE_API_BASE_URL` empty, and prepend `{ "source": "/api/:path*", "destination": "https://<ACTUAL-RENDER-HOST>.onrender.com/api/:path*" }` in `vercel.json` **only after** Render assigns the real hostname (never deploy a placeholder URL).
   - **Option B — Cloudflare Pages Free (Commercial-Permitted)**: Deploy Vite `dist/` + `functions/api/[[path]].js` on `https://<project>.pages.dev`, leave `VITE_API_BASE_URL` empty, and set server-side `BACKEND_ORIGIN=https://<ACTUAL-RENDER-HOST>.onrender.com`.
 - [ ] **Backend API + LibreOffice**: Deploy `Dockerfile` via **Render Free Web Service** (`render.yaml`) with `COOKIE_SAME_SITE=lax`, `COOKIE_SECURE=true`, `FRONTEND_URL=https://<actual-frontend-domain>`, `CORS_ORIGINS=https://<actual-frontend-domain>`.
-- [ ] **Database**: Provision a **non-expiring** managed PostgreSQL database on **Neon Free** (1 GB storage/project, 100 CU-hours/project/mo, 5 GB public network transfer/project/mo, up to 20 GB combined; `DATABASE_URL` with TLS, `DATABASE_SSL=true`, `PG_CONNECTION_TIMEOUT_MS=10000`, Migration v8). Do NOT use expiring 30-day Render Free PostgreSQL.
+- [ ] **Database**: Provision a **non-expiring** managed PostgreSQL database on **Neon Free** (1 GB storage/project, 100 CU-hours/project/mo, 5 GB public network transfer/project/mo, up to 20 GB combined; `DATABASE_URL` with TLS, `DATABASE_SSL=true`, `PG_CONNECTION_TIMEOUT_MS=10000`, Migration v9 including `ai_provider_quotas`). Do NOT use expiring 30-day Render Free PostgreSQL.
 - [ ] **Persistent Document Storage (Simplest Zero-Card Primary: Neon PostgreSQL `BYTEA`; Optional: OCI Object Storage / Cloudflare R2)**:
   - Simplest Zero-Card Primary (`OBJECT_STORAGE_PROVIDER=postgres`, `STRICT_STORAGE_QUOTA_MODE=true`): Uses Neon Free PostgreSQL `document_files` (`BYTEA`, SHA-256 verified on read, cross-user isolated) with application-side safety limits of **700 MB** managed documents / **850 MB** total DB ceiling / **4 GB/mo** outbound transfer (safely below Neon Free's 1 GB storage & 5 GB/mo egress limits).
   - Optional OCI (`OBJECT_STORAGE_PROVIDER=oci`): Private Standard-tier OCI bucket + Customer Secret Key (8 GB default / up to 16 GB max only after explicit `OCI_OS_ALWAYS_FREE_VERIFIED=true` + `OCI_MAX_MANAGED_BYTES` / 40,000 req/mo / 8 TB outbound/mo).
@@ -37,10 +37,13 @@
 - [ ] `JWT_ACCESS_SECRET=<random 64-hex string>` (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`)
 - [ ] `ADMIN_EMAILS=<comma-separated admin emails>` (fail-closed if empty)
 - [ ] `STRICT_FREE_AI_ONLY=true`
+- [ ] `AI_FAILOVER_ENABLED=true`, `AI_MAX_PROVIDER_ATTEMPTS=4`, `AI_MAX_RETRIES_PER_PROVIDER=1`
 - [ ] `AI_PROVIDER=openrouter`
-- [ ] `OPENROUTER_API_KEY=<key>` + `OPENROUTER_MODEL=particle-ai/particle-1:free`
-- [ ] `GEMINI_API_KEY=<key>` + `GEMINI_MODEL=gemini-3.1-flash-lite` (fallback #1)
-- [ ] `GROQ_API_KEY=<key>` + `GROQ_MODEL=llama-3.3-70b-versatile` (fallback #2)
+- [ ] `OPENROUTER_API_KEY=<key>` + `OPENROUTER_PRIMARY_MODEL=particle-ai/particle-1:free` + `OPENROUTER_FALLBACK_MODEL_1=baidu/ernie-5.5-flash-preview:free` + `OPENROUTER_FALLBACK_MODEL_2=inclusionai/ling-3.2-flash:free` + `OPENROUTER_DYNAMIC_MODEL=openrouter/free`
+- [ ] `ENABLE_NEMOTRON_FREE=false` (prohibited for confidential/personal documents)
+- [ ] `GEMINI_API_KEY=<key>` + `GEMINI_CONTENT_MODEL=gemini-3.1-flash-lite` (independent provider & Stage B validation)
+- [ ] `ENABLE_GROQ_FREE=false` (retired `llama-3.3-70b-versatile` removed; keep disabled unless account free tier is verified)
+- [ ] `STRICT_TEMPLATE_PRESERVATION=true`, `PRESERVE_ORIGINAL_DOCUMENT=true`, `ALLOW_TEMPLATE_REGENERATION=false`, `ALLOW_SILENT_FORMAT_CONVERSION=false`, `MAX_DOCUMENT_TEXT_GROWTH_RATIO=1.15`, `MAX_TEMPLATE_REPAIR_ATTEMPTS=1`
 - [ ] `DOCX_PDF_CONVERSION_ENABLED=true`
 - [ ] `DOCX_PDF_TIMEOUT_MS=120000`
 - [ ] `GOOGLE_CLIENT_ID=<OAuth2 Web Client ID>` (add public HTTPS origin to Google Cloud Console Authorized JavaScript Origins)

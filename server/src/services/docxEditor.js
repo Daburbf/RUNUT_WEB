@@ -426,9 +426,18 @@ export async function verifyDocxPreservation(originalBuffer, modifiedBuffer) {
 
   const headersFootersPreserved = await compareFileGroup((f) => /^word\/(header|footer)\d*\.xml$/i.test(f));
   const imagesPreserved = await compareFileGroup((f) => /^word\/media\//i.test(f));
-  const stylesPreserved = await compareFileGroup((f) => f === 'word/styles.xml' || f === 'word/numbering.xml' || f === 'word/theme/theme1.xml');
-  const footnotesPreserved = await compareFileGroup((f) => f === 'word/footnotes.xml' || f === 'word/endnotes.xml');
-  const hyperlinksPreserved = await compareFileGroup((f) => f === 'word/_rels/document.xml.rels');
+  const stylesPreserved = await compareFileGroup((f) =>
+    f === 'word/styles.xml'
+    || f === 'word/numbering.xml'
+    || f === 'word/settings.xml'
+    || f === '[Content_Types].xml'
+    || /^word\/theme\//i.test(f),
+  );
+  const footnotesPreserved = await compareFileGroup((f) =>
+    f === 'word/footnotes.xml' || f === 'word/endnotes.xml' || f === 'word/comments.xml',
+  );
+  const hyperlinksPreserved = await compareFileGroup((f) => /\.rels$/i.test(f));
+  const paragraphCountPreserved = origDoc.getElementsByTagNameNS(W_NS, 'p').length === modDoc.getElementsByTagNameNS(W_NS, 'p').length;
 
   // Verify bibliography paragraphs were untouched
   const extractBibTexts = (doc) => {
@@ -453,7 +462,8 @@ export async function verifyDocxPreservation(originalBuffer, modifiedBuffer) {
     stylesPreserved &&
     footnotesPreserved &&
     hyperlinksPreserved &&
-    bibliographyPreserved;
+    bibliographyPreserved &&
+    paragraphCountPreserved;
 
   const classification = allPreserved
     ? 'preserved'
@@ -472,6 +482,7 @@ export async function verifyDocxPreservation(originalBuffer, modifiedBuffer) {
       page_configuration_preserved: pageConfigPreserved,
       footnotes_preserved: footnotesPreserved,
       hyperlinks_preserved: hyperlinksPreserved,
+      paragraph_count_preserved: paragraphCountPreserved,
     },
   };
 }

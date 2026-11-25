@@ -4,8 +4,8 @@
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Core Application & Full-Stack Build | **Ready** | Frontend (`vite build`, 2.17 s) & Backend Express API verified |
-| Automated Backend Test Suite (Local Windows) | **194 Passed / 0 Failed / 4 Conditionally Skipped** | 198 total tests (includes OCI Object Storage S3 adapter & Migration v8 persistent quotas, Cloudflare Pages proxy, persistent `__Secure-runut_refresh` cookies, R2 adapter & Migration v7 quotas, security regressions, and restart durability); strict CI mode verified (`RUNUT_REQUIRE_INTEGRATION_TESTS=true`) |
+| Core Application & Full-Stack Build | **Ready (Local)** | Frontend (`vite build`, 3.82 s, 59 modules, 0 secrets in `dist/`) & Backend Express API verified |
+| Automated Backend Test Suite (Local Windows) | **209 Passed / 0 Failed / 4 Conditionally Skipped** | 213 total tests (includes Free Multi-Model Registry, Migration v9 `ai_provider_quotas`, Privacy Gate, 3-Stage DOCX XML Structural Fingerprinting, PDF fail-closed, OCI/R2 storage, and security regressions); strict CI mode verified (`RUNUT_REQUIRE_INTEGRATION_TESTS=true`) |
 | Persistent File Storage (Restart Survival) | **Implemented** | Simplest Zero-Card Primary: **Neon Free PostgreSQL `BYTEA`** (`OBJECT_STORAGE_PROVIDER=postgres`, 700 MB managed / 4 GB/mo outbound app safety limits, SHA-256 verified); Optional: **Oracle Object Storage Always Free** (`ociObjectStorage.js`, Migration v8) & **Cloudflare R2** (`r2Storage.js`, Migration v7) |
 | Native Windows Support (No Docker) | **Implemented & Verified** | `soffice.com` preferred, isolated profiles, safe `spawn(..., { shell: false })`, temp cleanup |
 | Provisioned CI Integration Jobs | **Configured** | `.github/workflows/ci.yml` provisions live `postgres:16-alpine` and Ubuntu `libreoffice-writer` in strict mode |
@@ -21,12 +21,13 @@ All existing RUNUT features were audited and verified to work together as one in
 - **Authentication & Sessions**: Email/password registration, bcrypt hashing, email OTP verification, password reset via SMTP, Google Identity Services OAuth2, HttpOnly rotating refresh cookie, `token_version` invalidation.
 - **Token Ledger & Download Safety**: Progressive analysis pricing (`Math.ceil(words / 1000)`), idempotency keys, atomic concurrent deductions, automatic full refund on total AI failure, two-phase download reservation (`reserve -> prepare -> commit / cancel`).
 - **QRIS Dynamic Payments**: Midtrans Snap/Core API integration, 10-minute dynamic QRIS expiry (`custom_expiry`), idempotent auto-renew, constant-time webhook signature verification, late-settlement reconciliation.
-- **Zero-Cost AI Provider Chain**: `STRICT_FREE_AI_ONLY=true` blocks paid providers/models; 3-tier free fallback chain (`OpenRouter :free -> Google Gemini Free Tier -> Groq Free Tier`) with quota tracking (`/api/admin/ai-usage` fail-closed).
+- **Zero-Cost AI Provider Chain**: `STRICT_FREE_AI_ONLY=true` enforces the explicit free model registry (`aiModelRegistry.js`), blocks paid providers/models and retired Groq `llama-3.3-70b-versatile`, verifies OpenRouter catalog `price=0`, tracks real rate-limit headers/cooldowns (`aiQuota.js`, Migration v9), enforces confidential document privacy gating, and fails over cleanly (`particle-1:free -> ernie-5.5-flash-preview:free -> ling-3.2-flash:free -> openrouter/free -> gemini-3.1-flash-lite`, with Groq disabled unless verified free). See `docs/AI_FREE_PROVIDER_AND_TEMPLATE_PRESERVATION_REPORT.md`.
 - **Multi-Domain Writing Engine**: Automatic language (`id`/`en`), document type, writing profile, tone, audience, and purpose detection without requiring manual mode selection.
 - **Honest Analysis & Similarity**: Strict character-index issue validation (`validateAiIssues`), numerical/proper-noun mutation flagging (`needs_manual_review`), clear separation between internal repetition and external corpus similarity (`corpus_similarity_percent: null` when no external corpus is compared), non-authorship AI pattern disclaimer.
-- **Document Template Preservation**:
-  - **DOCX**: In-place OOXML `<w:t>` editing preserving styles, tables, images, headers, footers, footnotes, hyperlinks, section properties, and bibliography (`verifyDocxPreservation`).
-  - **PDF**: Automatic strategy selector (A: Native text edit, B: Fillable AcroForm, C: Placeholder regions, D: Gated 9-step optional PDF-to-DOCX with layout & visual validation, E: Scanned/photographic OCR-only preserving original PDF). Never reconstructs uploaded PDFs from plain text.
+- **Strict 3-Stage Original Document Template Preservation (`templatePreservationEngine.js`)**:
+  - **Stage A (Content Editing AI)** revises only editable text blocks using stable block IDs; **Stage B (Validation)** checks block IDs, placeholders, citations, and text growth ratio (`MAX_DOCUMENT_TEXT_GROWTH_RATIO=1.15`, 1 repair retry); **Stage C (Deterministic Template Engine)** mutates only authorized `<w:t>` nodes and validates structural fingerprints before/after.
+  - **DOCX**: In-place OOXML `<w:t>` editing preserving styles, tables, merged cells, images, headers, footers, footnotes, endnotes, bookmarks, hyperlinks, section properties, and bibliography (`verifyDocxPreservation` + structural fingerprint comparison).
+  - **PDF**: Native text / AcroForm editing only when safe; scanned PDFs fail closed (`SCANNED_PDF_UNSUPPORTED_FOR_NATIVE_EDIT`) and preserve the immutable original without fake overlays or silent conversion.
   - **Legacy DOC**: Validated OLE2 conversion to intermediate DOCX via LibreOffice headless while keeping the original `.doc` immutable.
   - **Analysis Reports & Annotated Copies**: Separate clean PDF/DOCX analysis reports and non-destructive annotated copies with zero RUNUT watermarks or creator metadata.
 

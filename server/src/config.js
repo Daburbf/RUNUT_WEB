@@ -55,13 +55,33 @@ export const config = {
   },
 
   ai: {
+    strictFreeOnly: String(process.env.STRICT_FREE_AI_ONLY ?? 'true').trim().toLowerCase() !== 'false',
+    failoverEnabled: String(process.env.AI_FAILOVER_ENABLED ?? 'true').trim().toLowerCase() !== 'false',
+    maxProviderAttempts: Number(process.env.AI_MAX_PROVIDER_ATTEMPTS || 4),
+    maxRetriesPerProvider: Number(process.env.AI_MAX_RETRIES_PER_PROVIDER || 1),
     provider: (cleanEnv(process.env.AI_PROVIDER) || 'openrouter').toLowerCase(),
-    baseUrl: (cleanEnv(process.env.OPENROUTER_BASE_URL) || cleanEnv(process.env.AI_BASE_URL) || (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1'))).replace(/\/$/, ''),
-    apiKey: cleanEnv(process.env.OPENROUTER_API_KEY) || cleanEnv(process.env.AI_API_KEY),
-    model: cleanEnv(process.env.OPENROUTER_MODEL) || cleanEnv(process.env.AI_MODEL) || (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : 'particle-ai/particle-1:free'),
+    baseUrl: (cleanEnv(process.env.OPENROUTER_BASE_URL) || cleanEnv(process.env.AI_BASE_URL) || (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : 'https://openrouter.ai/api/v1')).replace(/\/$/, ''),
+    apiKey: cleanEnv(process.env.OPENROUTER_API_KEY) || cleanEnv(process.env.GEMINI_API_KEY) || cleanEnv(process.env.AI_API_KEY),
+    model: cleanEnv(process.env.OPENROUTER_PRIMARY_MODEL) || cleanEnv(process.env.OPENROUTER_MODEL) || cleanEnv(process.env.AI_MODEL) || (cleanEnv(process.env.AI_PROVIDER).toLowerCase() === 'gemini' ? 'gemini-3.1-flash-lite' : 'particle-ai/particle-1:free'),
+    openrouterPrimaryModel: cleanEnv(process.env.OPENROUTER_PRIMARY_MODEL) || cleanEnv(process.env.OPENROUTER_MODEL) || 'particle-ai/particle-1:free',
+    openrouterFallbackModel1: cleanEnv(process.env.OPENROUTER_FALLBACK_MODEL_1) || 'baidu/ernie-5.5-flash-preview:free',
+    openrouterFallbackModel2: cleanEnv(process.env.OPENROUTER_FALLBACK_MODEL_2) || 'inclusionai/ling-3.2-flash:free',
+    openrouterDynamicModel: cleanEnv(process.env.OPENROUTER_DYNAMIC_MODEL) || 'openrouter/free',
+    enableNemotronFree: String(process.env.ENABLE_NEMOTRON_FREE || 'false').trim().toLowerCase() === 'true',
+    enableGroqFree: String(process.env.ENABLE_GROQ_FREE || 'false').trim().toLowerCase() === 'true',
+    groqFreeVerified: String(process.env.GROQ_FREE_VERIFIED || 'false').trim().toLowerCase() === 'true',
     timeoutMs: Number(process.env.AI_TIMEOUT_MS || 90000),
     geminiApiKey: cleanEnv(process.env.GEMINI_API_KEY),
-    geminiModel: cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.1-flash-lite',
+    geminiModel: cleanEnv(process.env.GEMINI_CONTENT_MODEL) || cleanEnv(process.env.GEMINI_MODEL) || 'gemini-3.1-flash-lite',
+  },
+
+  templatePreservation: {
+    strict: String(process.env.STRICT_TEMPLATE_PRESERVATION ?? 'true').trim().toLowerCase() !== 'false',
+    preserveOriginalDocument: String(process.env.PRESERVE_ORIGINAL_DOCUMENT ?? 'true').trim().toLowerCase() !== 'false',
+    allowTemplateRegeneration: String(process.env.ALLOW_TEMPLATE_REGENERATION || 'false').trim().toLowerCase() === 'true',
+    allowSilentFormatConversion: String(process.env.ALLOW_SILENT_FORMAT_CONVERSION || 'false').trim().toLowerCase() === 'true',
+    maxDocumentTextGrowthRatio: Number(process.env.MAX_DOCUMENT_TEXT_GROWTH_RATIO || 1.15),
+    maxTemplateRepairAttempts: Number(process.env.MAX_TEMPLATE_REPAIR_ATTEMPTS || 1),
   },
 
   admin: {
