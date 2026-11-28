@@ -38,11 +38,19 @@ test.after(async () => {
 
 async function setupUserAndDoc(tokens = 5) {
   const email = `dl-${Date.now()}-${Math.random().toString(16).slice(2, 7)}@runut.test`;
-  const reg = await request(app).post('/api/auth/register').send({
-    name: 'Uji Unduhan',
-    email,
-    password: 'Password123!',
-  });
+  const prevBonus = process.env.SIGNUP_FREE_TOKENS;
+  process.env.SIGNUP_FREE_TOKENS = '0';
+  let reg;
+  try {
+    reg = await request(app).post('/api/auth/register').send({
+      name: 'Uji Unduhan',
+      email,
+      password: 'Password123!',
+    });
+  } finally {
+    if (prevBonus === undefined) delete process.env.SIGNUP_FREE_TOKENS;
+    else process.env.SIGNUP_FREE_TOKENS = prevBonus;
+  }
   assert.equal(reg.status, 201);
   if (tokens > 0) {
     await tokenTransactions.credit({

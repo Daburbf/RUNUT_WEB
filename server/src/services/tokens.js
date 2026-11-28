@@ -3,8 +3,16 @@ import { countWords } from './stats.js';
 export const MIN_ANALYSIS_WORDS = 20;
 export const WORDS_PER_TOKEN = 1000;
 export const DOWNLOAD_TOKEN_COST = 1;
+export const DEFAULT_SIGNUP_BONUS_TOKENS = 10;
 export const AI_MAX_CHARS = 200000;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+export function getSignupBonusTokens() {
+  const raw = process.env.SIGNUP_FREE_TOKENS;
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_SIGNUP_BONUS_TOKENS;
+  const parsed = Math.trunc(Number(raw));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SIGNUP_BONUS_TOKENS;
+}
 
 export const TOKEN_PACKAGES = [
   {
@@ -86,6 +94,7 @@ export function getTokenPricingInfo() {
     min_words: MIN_ANALYSIS_WORDS,
     words_per_token: WORDS_PER_TOKEN,
     download_cost: DOWNLOAD_TOKEN_COST,
+    signup_bonus_tokens: getSignupBonusTokens(),
     max_chars: AI_MAX_CHARS,
     max_upload_bytes: MAX_UPLOAD_BYTES,
     packages: TOKEN_PACKAGES,

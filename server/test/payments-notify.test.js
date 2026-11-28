@@ -99,19 +99,20 @@ test('notifikasi sah melunasi transaksi, menambah saldo token sesuai paket, dan 
   assert.equal(res.body.status, 'paid');
 
   const me = await agent.get('/api/auth/me').set(auth);
-  assert.equal(me.body.user.token_balance, 10);
+  assert.equal(me.body.user.token_balance, 20, '10 token bonus akun baru + 10 token pembelian');
   assert.equal(me.body.user.total_purchased, 10);
 
   // Webhook ulang dari gateway tidak boleh menambah saldo token dua kali
   const repeat = await request(app).post('/api/payments/notify').send(body);
   assert.equal(repeat.status, 200);
   const me2 = await agent.get('/api/auth/me').set(auth);
-  assert.equal(me2.body.user.token_balance, 10, 'webhook ganda tidak menggandakan token');
+  assert.equal(me2.body.user.token_balance, 20, 'webhook ganda tidak menggandakan token');
 
   const txRes = await agent.get('/api/tokens/transactions').set(auth);
-  assert.equal(txRes.body.transactions.length, 1, 'hanya ada 1 entri ledger pembelian');
-  assert.equal(txRes.body.transactions[0].amount, 10);
-  assert.equal(txRes.body.transactions[0].reference_id, orderId);
+  const purchaseTxs = txRes.body.transactions.filter((t) => t.type === 'purchase');
+  assert.equal(purchaseTxs.length, 1, 'hanya ada 1 entri ledger pembelian');
+  assert.equal(purchaseTxs[0].amount, 10);
+  assert.equal(purchaseTxs[0].reference_id, orderId);
 
   // Invoice PDF berhasil dibuat dan memuat informasi token
   const inv = await agent.get(`/api/payments/${orderId}/invoice`).set(auth);
@@ -134,5 +135,5 @@ test('notifikasi "expire" menutup transaksi tanpa menambah saldo token', async (
   assert.equal(res.status, 200);
   assert.equal(res.body.status, 'expired');
   const me = await agent.get('/api/auth/me').set(auth);
-  assert.equal(me.body.user.token_balance, 0);
+  assert.equal(me.body.user.token_balance, 10, 'saldo tetap 10 token bonus awal tanpa tambahan dari transaksi expire');
 });

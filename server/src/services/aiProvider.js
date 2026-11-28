@@ -28,6 +28,7 @@ import {
   OPTIONAL_OPENROUTER_NEMOTRON_MODEL,
   DEFAULT_GEMINI_BASE_URL,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FALLBACK_MODELS,
   DEFAULT_GROQ_BASE_URL,
   DEFAULT_TOKEN_HARBOR_BASE_URL,
   DEFAULT_TOKEN_HARBOR_ALLOWANCE_URL,
@@ -74,6 +75,7 @@ export {
   OPTIONAL_OPENROUTER_NEMOTRON_MODEL,
   DEFAULT_GEMINI_BASE_URL,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FALLBACK_MODELS,
   DEFAULT_GROQ_BASE_URL,
   DEFAULT_TOKEN_HARBOR_BASE_URL,
   DEFAULT_TOKEN_HARBOR_ALLOWANCE_URL,
@@ -391,6 +393,90 @@ function buildOpenRouterFallbackModels(primaryModel, env = process.env) {
   return out;
 }
 
+const geminiLiveModelsCache = {
+  fetchedAt: 0,
+  ttlMs: 10 * 60 * 1000,
+  baseUrl: '',
+  models: [],
+};
+
+const GEMINI_EXCLUDED_RE = /(?:image|tts|audio|live|embedding|robotics|computer|veo|imagen|aqa|lyria|deep-research|thinking|pro|ultra|learnlm|vision|exp-)/i;
+
+async function discoverLiveGeminiModels({ apiKey, baseUrl, fetchImpl = fetch, nowMs = Date.now() }) {
+  if (!apiKey || !baseUrl || typeof fetchImpl !== 'function') return [];
+  const cleanBase = String(baseUrl).replace(/\/$/, '');
+  if (
+    geminiLiveModelsCache.models.length > 0
+    && geminiLiveModelsCache.baseUrl === cleanBase
+    && (nowMs - geminiLiveModelsCache.fetchedAt) < geminiLiveModelsCache.ttlMs
+  ) {
+    return geminiLiveModelsCache.models;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetchImpl(`${cleanBase}/models`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res?.ok) return [];
+    const data = await res.json().catch(() => null);
+    const list = Array.isArray(data?.data) ? data.data : [];
+    const ids = list
+      .map((item) => String(item?.id || '').replace(/^models\//, '').trim())
+      .filter((id) => /^gemini-/i.test(id) && /flash/i.test(id) && !GEMINI_EXCLUDED_RE.test(id));
+    if (!ids.length) return [];
+
+    // Prioritize flash-lite & latest generation flash models first
+    const score = (id) => {
+      let s = 0;
+      if (/flash-lite/i.test(id)) s += 20;
+      else if (/flash/i.test(id)) s += 10;
+      const verMatch = id.match(/^gemini-(\d+(?:\.\d+)?)/i);
+      if (verMatch) s += Number(verMatch[1]) * 10;
+      if (/preview/i.test(id)) s -= 1;
+      return s;
+    };
+    const sorted = Array.from(new Set(ids)).sort((a, b) => score(b) - score(a));
+    geminiLiveModelsCache.fetchedAt = nowMs;
+    geminiLiveModelsCache.baseUrl = cleanBase;
+    geminiLiveModelsCache.models = sorted;
+    return sorted;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildGeminiFallbackModels(primaryModel, env = process.env) {
+  const apiKey = String(env.GEMINI_API_KEY || (primaryModel ? env.AI_API_KEY : '') || '').trim();
+  if (!apiKey) return [];
+  const baseUrl = String(env.GEMINI_BASE_URL || DEFAULT_GEMINI_BASE_URL).replace(/\/$/, '');
+  const timeoutMs = Number(env.AI_TIMEOUT_MS || 90000);
+
+  const configuredFallbacks = String(env.GEMINI_FALLBACK_MODELS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const rawList = [
+    env.GEMINI_CONTENT_MODEL || env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+    ...(configuredFallbacks.length ? configuredFallbacks : DEFAULT_GEMINI_FALLBACK_MODELS),
+  ];
+
+  const seen = new Set(primaryModel ? [String(primaryModel).trim()] : []);
+  const out = [];
+  for (const m of rawList) {
+    const clean = String(m || '').trim();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(makeCandidate('gemini', clean, baseUrl, apiKey, timeoutMs));
+  }
+  return out;
+}
+
 function resolveFallbackChain(primary, env = process.env) {
   if (String(env.AI_FAILOVER_ENABLED ?? 'true').trim().toLowerCase() === 'false') {
     return [];
@@ -401,6 +487,11 @@ function resolveFallbackChain(primary, env = process.env) {
   // 1. Additional OpenRouter free model variants (ERNIE -> Ling -> OpenRouter Free Router -> optional Nemotron)
   if (primary.provider === 'openrouter') {
     chain.push(...buildOpenRouterFallbackModels(primary.model, env));
+  }
+
+  // 1a. Additional Gemini Free Tier model variants when Gemini is primary (handles single-model 503 high-demand spikes)
+  if (primary.provider === 'gemini') {
+    chain.push(...buildGeminiFallbackModels(primary.model, env));
   }
 
   // 1b. Optional Verified Free DeepSeek V4.1 Flash: Token Harbor (opt-in only)
@@ -423,14 +514,9 @@ function resolveFallbackChain(primary, env = process.env) {
     }
   }
 
-  // 2. Independent Provider: Google Gemini Free Tier
+  // 2. Independent Provider: Google Gemini Free Tier (primary + fallback free-tier models)
   if (primary.provider !== 'gemini') {
-    const apiKey = String(env.GEMINI_API_KEY || '').trim();
-    const model = String(env.GEMINI_CONTENT_MODEL || env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim();
-    const baseUrl = String(env.GEMINI_BASE_URL || DEFAULT_GEMINI_BASE_URL).replace(/\/$/, '');
-    if (apiKey && model) {
-      chain.push(makeCandidate('gemini', model, baseUrl, apiKey, timeoutMs));
-    }
+    chain.push(...buildGeminiFallbackModels(null, env));
   }
 
   // 3. Groq ONLY if explicitly enabled, verified free, and non-deprecated
@@ -813,8 +899,11 @@ export async function callStructuredAi({
   let skippedForPrivacy = 0;
   let skippedForCooldown = 0;
   const authFailedProviders = new Set();
+  const triedGeminiModels = new Set();
+  let geminiLiveDiscovered = false;
 
-  for (const candidate of candidates) {
+  for (let idx = 0; idx < candidates.length; idx += 1) {
+    const candidate = candidates[idx];
     if (attemptsMade >= maxProviderAttempts) break;
     if (authFailedProviders.has(candidate.provider)) continue;
 
@@ -966,6 +1055,9 @@ export async function callStructuredAi({
         error: err.message,
       });
 
+      if (candidate.provider === 'gemini') {
+        triedGeminiModels.add(candidate.model);
+      }
       // Do not fail over on auth/bad-request when there are no other configured candidates
       if (!shouldFallback(err)) {
         if (err.code === 'AI_AUTH_401' || err.code === 'AI_AUTH_403') {
@@ -974,6 +1066,30 @@ export async function callStructuredAi({
           if (hasOtherProvider) continue;
         }
         throw err;
+      }
+
+      // On first Gemini failure (e.g. 503 high demand or 404 retired model), discover live available
+      // Gemini Flash models from the provider API so fallback never wastes attempts on retired 404 models.
+      if (candidate.provider === 'gemini' && !geminiLiveDiscovered && !authFailedProviders.has('gemini')) {
+        geminiLiveDiscovered = true;
+        const liveModels = await discoverLiveGeminiModels({
+          apiKey: candidate.apiKey,
+          baseUrl: candidate.baseUrl,
+          fetchImpl,
+          nowMs,
+        });
+        if (liveModels.length > 0) {
+          const liveCandidates = liveModels
+            .filter((m) => !triedGeminiModels.has(m))
+            .map((m) => ({
+              ...makeCandidate('gemini', m, candidate.baseUrl, candidate.apiKey, candidate.timeoutMs),
+              isPrimary: false,
+            }));
+          if (liveCandidates.length > 0) {
+            const nonGeminiRemaining = candidates.slice(idx + 1).filter((c) => c.provider !== 'gemini');
+            candidates.splice(idx + 1, candidates.length - (idx + 1), ...liveCandidates, ...nonGeminiRemaining);
+          }
+        }
       }
     }
   }

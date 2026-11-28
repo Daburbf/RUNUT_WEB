@@ -145,6 +145,46 @@ test('AI Provider: OpenRouter HTTP 503 triggers Gemini fallback', async () => {
   assert.equal(out.fallbackUsed, true);
 });
 
+test('AI Provider: Gemini primary HTTP 503 automatically falls back to secondary Gemini free-tier model', async () => {
+  resetAiUsageForTest();
+  const geminiOnlyEnv = {
+    AI_PROVIDER: 'gemini',
+    GEMINI_API_KEY: 'gm-test-key',
+    GEMINI_CONTENT_MODEL: 'gemini-3.1-flash-lite',
+    AI_TIMEOUT_MS: '5000',
+  };
+  const info = getProviderInfo(geminiOnlyEnv);
+  assert.equal(info.provider, 'gemini');
+  assert.equal(info.model, 'gemini-3.1-flash-lite');
+  assert.equal(info.fallback.configured, true);
+  assert.equal(info.fallback.model, 'gemini-3-flash-preview');
+
+  const triedModels = [];
+  const fetchImpl = async (url, opts) => {
+    if (String(url).endsWith('/models')) {
+      return mockResponse(200, {
+        data: [
+          { id: 'models/gemini-3.1-flash-lite' },
+          { id: 'models/gemini-3-flash-preview' },
+        ],
+      });
+    }
+    const body = JSON.parse(opts.body);
+    triedModels.push(body.model);
+    if (body.model === 'gemini-3.1-flash-lite') {
+      return mockResponse(503, { error: { code: 503, message: 'This model is currently experiencing high demand.', status: 'UNAVAILABLE' } });
+    }
+    return mockResponse(200, validAiPayload(SAMPLE_TEXT, body.model));
+  };
+
+  const out = await analyzeWithProvider(SAMPLE_TEXT, { fetchImpl, retryBaseDelayMs: 1 }, geminiOnlyEnv);
+  assert.equal(out.provider, 'gemini');
+  assert.equal(out.model, 'gemini-3-flash-preview');
+  assert.equal(out.fallbackUsed, true);
+  assert.ok(triedModels.includes('gemini-3.1-flash-lite'));
+  assert.ok(triedModels.includes('gemini-3-flash-preview'));
+});
+
 test('AI Provider: OpenRouter timeout (AbortError) triggers Gemini fallback', async () => {
   const fetchImpl = async (url) => {
     if (url.includes('openrouter.ai')) {

@@ -85,8 +85,9 @@ test('login Google: 503 bila GOOGLE_CLIENT_ID belum dikonfigurasi, lalu berhasil
     assert.equal(ok.body.user.email_verified, true);
     assert.equal(ok.body.user.auth_provider, 'google');
     assert.equal(ok.body.user.has_password, false);
+    assert.equal(ok.body.user.token_balance, 10, 'akun Google baru mendapat 10 token gratis');
 
-    // Tambah saldo token, lalu login ulang via Google harus mempertahankan akun & saldo yang sama
+    // Tambah saldo token, lalu login ulang via Google harus mempertahankan akun & saldo yang sama (bonus tidak dobel)
     await tokenTransactions.credit({
       user_id: ok.body.user.id,
       amount: 5,
@@ -99,7 +100,7 @@ test('login Google: 503 bila GOOGLE_CLIENT_ID belum dikonfigurasi, lalu berhasil
     const loginAgain = await agent.post('/api/auth/google').send({ credential: 'valid-google-token' });
     assert.equal(loginAgain.status, 200);
     assert.equal(loginAgain.body.user.id, ok.body.user.id);
-    assert.equal(loginAgain.body.user.token_balance, 5);
+    assert.equal(loginAgain.body.user.token_balance, 15, 'login ulang Google tidak menggandakan bonus pendaftaran');
 
     // Login dengan password pada akun Google-only ditolak dengan pesan jelas
     const pwLogin = await agent.post('/api/auth/login').send({ email: gEmail, password: 'Password123!' });
@@ -150,11 +151,15 @@ test('registrasi OTP via email, batas percobaan OTP, verifikasi OTP, dan lupa pa
     const wrongOtp = await agent.post('/api/auth/verify-otp').send({ email, otp: '000000' });
     assert.equal(wrongOtp.status, 400);
 
-    // 4. OTP benar memverifikasi akun & menerbitkan sesi
+    const pendingUser = await users.findByEmail(email);
+    assert.equal(pendingUser.token_balance, 0, 'token gratis belum diberikan sebelum verifikasi OTP');
+
+    // 4. OTP benar memverifikasi akun & menerbitkan sesi + bonus 10 token gratis
     const verified = await agent.post('/api/auth/verify-otp').send({ email, otp: otpCode });
     assert.equal(verified.status, 200);
     assert.ok(verified.body.accessToken);
     assert.equal(verified.body.user.email_verified, true);
+    assert.equal(verified.body.user.token_balance, 10, 'pengguna mendapat 10 token gratis setelah verifikasi OTP');
 
     // 5. Lupa password mengirim OTP & tautan reset
     const forgot = await agent.post('/api/auth/forgot-password').send({ email });

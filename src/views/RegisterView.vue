@@ -54,7 +54,7 @@ async function submit() {
       startCooldown(60)
       return
     }
-    ok.value = 'Akun berhasil dibuat. Mengarahkan ke halaman analisis...'
+    ok.value = 'Akun berhasil dibuat dengan 10 token gratis. Mengarahkan ke halaman analisis...'
     await router.push('/analisis')
   } catch (e) {
     err.email = e.message
@@ -118,6 +118,9 @@ async function onGoogleCredential(credential) {
     :subtitle="step === 'otp' ? 'Masukkan 6 digit kode OTP dari email Anda untuk mengaktifkan akun.' : 'Daftar akun Runut dan mulai periksa tulisanmu.'"
   >
     <template v-if="step === 'form'">
+      <div class="mb-4 border-2 border-black bg-[#F2F2F2] px-3.5 py-2.5 text-xs font-bold uppercase tracking-wide">
+        <span class="text-[#FF3000]">■</span> Bonus akun baru: gratis 10 token untuk testing setelah daftar.
+      </div>
       <div class="mb-4">
         <GoogleSignInButton label="Daftar dengan Google" :disabled="busy" @credential="onGoogleCredential" @error="errorMsg = $event" />
       </div>

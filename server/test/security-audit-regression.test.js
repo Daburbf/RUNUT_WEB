@@ -92,7 +92,7 @@ test('Security Regression 3: BOLA / IDOR protection across User A, User B, and A
     password: 'PasswordB123!',
   });
   assert.equal(regA.status, 201);
-  assert.equal(regA.body.user.token_balance, 0, 'Mass assignment of token_balance must be ignored');
+  assert.equal(regA.body.user.token_balance, 10, 'Mass assignment of token_balance must be ignored (only default 10 signup bonus granted)');
 
   const tokenA = regA.body.accessToken;
   const userBId = regB.body.user.id;

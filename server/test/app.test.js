@@ -96,9 +96,17 @@ const emailOf = () => `uji${Date.now()}${Math.random().toString(16).slice(2, 8)}
 
 async function newUser(agent, name = 'Penulis Uji', initialTokens = 0) {
   const email = emailOf();
-  const res = await agent.post('/api/auth/register').send({ name, email, password: 'rahasia12345' });
+  const prevBonus = process.env.SIGNUP_FREE_TOKENS;
+  process.env.SIGNUP_FREE_TOKENS = '0';
+  let res;
+  try {
+    res = await agent.post('/api/auth/register').send({ name, email, password: 'rahasia12345' });
+  } finally {
+    if (prevBonus === undefined) delete process.env.SIGNUP_FREE_TOKENS;
+    else process.env.SIGNUP_FREE_TOKENS = prevBonus;
+  }
   assert.equal(res.status, 201, JSON.stringify(res.body));
-  assert.equal(res.body.user.token_balance, 0, 'pengguna baru selalu mulai dengan saldo 0 token');
+  assert.equal(res.body.user.token_balance, 0);
   const id = res.body.user.id;
   if (initialTokens > 0) {
     await tokenTransactions.credit({
@@ -124,7 +132,7 @@ test('health melaporkan penyimpanan sementara, status AI, dan tarif token', asyn
   assert.equal(res.body.tokens.packages.length, 3);
 });
 
-test('pengguna baru memiliki saldo 0 token dan tidak bisa mengubah saldo lewat request', async () => {
+test('pengguna baru otomatis mendapat 10 token gratis untuk testing dan tidak bisa mengubah saldo lewat request', async () => {
   const agent = request.agent(app);
   const email = emailOf();
   const reg = await agent.post('/api/auth/register').send({
@@ -134,14 +142,31 @@ test('pengguna baru memiliki saldo 0 token dan tidak bisa mengubah saldo lewat r
     token_balance: 9999,
   });
   assert.equal(reg.status, 201);
-  assert.equal(reg.body.user.token_balance, 0);
-  assert.equal(reg.body.user.total_purchased, 0);
+  assert.equal(reg.body.user.token_balance, 10, 'pengguna baru otomatis mendapat 10 token gratis');
+  assert.equal(reg.body.user.total_purchased, 0, 'bonus gratis tidak dihitung sebagai pembelian');
   assert.equal(reg.body.user.total_used, 0);
 
   const auth = { Authorization: `Bearer ${reg.body.accessToken}` };
   const tok = await agent.get('/api/tokens').set(auth);
   assert.equal(tok.status, 200);
-  assert.equal(tok.body.balance, 0);
+  assert.equal(tok.body.balance, 10);
+  assert.equal(tok.body.pricing.signup_bonus_tokens, 10);
+
+  const txRes = await agent.get('/api/tokens/transactions').set(auth);
+  assert.equal(txRes.status, 200);
+  assert.equal(txRes.body.transactions.length, 1);
+  assert.equal(txRes.body.transactions[0].type, 'bonus');
+  assert.equal(txRes.body.transactions[0].amount, 10);
+  assert.equal(txRes.body.transactions[0].balance_after, 10);
+
+  // Pengguna baru langsung bisa melakukan analisis menggunakan token gratis
+  const an = await agent.post('/api/analysis').set(auth).send({
+    text: TEXT,
+    title: 'Uji Token Gratis',
+    ai_consent: true,
+  });
+  assert.equal(an.status, 201, JSON.stringify(an.body));
+  assert.equal(an.body.meta.token_balance, 9);
 });
 
 test('registrasi memvalidasi email, panjang sandi, dan email ganda', async () => {

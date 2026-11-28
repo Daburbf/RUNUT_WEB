@@ -7,6 +7,7 @@ import { signAccessToken, setRefreshCookie, clearRefreshCookie, readRefreshToken
 import { sendMail } from '../services/mailer.js';
 import { verifyGoogleIdToken } from '../services/googleAuth.js';
 import { logSecurityEvent, recordFailedLogin } from '../services/securityLog.js';
+import { getSignupBonusTokens } from '../services/tokens.js';
 
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || (process.env.NODE_ENV === 'production' ? 12 : 10));
 // Precomputed dummy bcrypt hash to equalize timing when login email does not exist
@@ -63,6 +64,22 @@ function mailConfigured() {
 
 function googleClientId() {
   return (config.google.clientId || process.env.GOOGLE_CLIENT_ID || '').trim();
+}
+
+async function grantSignupBonus(user) {
+  const bonus = getSignupBonusTokens();
+  if (!user?.id || bonus <= 0) return user;
+  const result = await tokenTransactions.credit({
+    user_id: user.id,
+    amount: bonus,
+    type: 'bonus',
+    description: `Bonus pendaftaran akun baru (${bonus} token gratis untuk testing)`,
+    reference_type: 'signup_bonus',
+    reference_id: user.id,
+    idempotency_key: `signup_bonus:${user.id}`,
+    meta: { reason: 'new_account_testing_bonus', amount: bonus },
+  });
+  return result?.user || user;
 }
 
 async function issueSession(res, user, userAgent) {
@@ -203,7 +220,8 @@ export const register = asyncHandler(async (req, res) => {
     email_verified: true,
     auth_provider: 'local',
   });
-  res.status(201).json(await issueSession(res, created, req.headers['user-agent']));
+  const credited = await grantSignupBonus(created);
+  res.status(201).json(await issueSession(res, credited, req.headers['user-agent']));
 });
 
 export const verifyOtp = asyncHandler(async (req, res) => {
@@ -222,7 +240,8 @@ export const verifyOtp = asyncHandler(async (req, res) => {
     otp_expires_at: null,
     otp_attempts: 0,
   });
-  res.json(await issueSession(res, updated, req.headers['user-agent']));
+  const credited = await grantSignupBonus(updated);
+  res.json(await issueSession(res, credited, req.headers['user-agent']));
 });
 
 export const resendOtp = asyncHandler(async (req, res) => {
@@ -294,6 +313,7 @@ export const googleLogin = asyncHandler(async (req, res) => {
     if (user.google_id && user.google_id !== profile.googleId) {
       throw new HttpError(409, 'Email ini sudah terhubung dengan akun Google lain.', { code: 'GOOGLE_ACCOUNT_MISMATCH' });
     }
+    const wasUnverified = user.email_verified === false;
     const patch = {
       email_verified: true,
       otp_code_hash: null,
@@ -305,13 +325,16 @@ export const googleLogin = asyncHandler(async (req, res) => {
     if (!user.name && profile.name) patch.name = profile.name;
     // Cegah pre-hijacking: jika akun lokal sebelumnya belum terverifikasi,
     // bersihkan password_hash dan reset token agar pendaftar awal tidak bisa mengakses akun Google ini.
-    if (user.email_verified === false) {
+    if (wasUnverified) {
       patch.password_hash = null;
       patch.auth_provider = 'google';
       patch.reset_token_hash = null;
       patch.reset_token_expires_at = null;
     }
     user = await users.update(user.id, patch);
+    if (wasUnverified) {
+      user = await grantSignupBonus(user);
+    }
   } else {
     user = await users.create({
       name: profile.name,
@@ -322,6 +345,7 @@ export const googleLogin = asyncHandler(async (req, res) => {
       email_verified: true,
       token_balance: 0,
     });
+    user = await grantSignupBonus(user);
   }
 
   res.json(await issueSession(res, user, req.headers['user-agent']));
@@ -434,7 +458,8 @@ export const resetPassword = asyncHandler(async (req, res) => {
     throw new HttpError(400, 'Token reset atau email beserta kode OTP wajib diisi.');
   }
 
-  await users.update(user.id, {
+  const wasUnverified = user.email_verified === false;
+  const updatedUser = await users.update(user.id, {
     password_hash: await bcrypt.hash(rawPassword, BCRYPT_ROUNDS),
     email_verified: true,
     reset_token_hash: null,
@@ -445,6 +470,9 @@ export const resetPassword = asyncHandler(async (req, res) => {
     otp_attempts: 0,
     token_version: Number(user.token_version || 0) + 1,
   });
+  if (wasUnverified && updatedUser) {
+    await grantSignupBonus(updatedUser);
+  }
   await refreshTokens.revokeAllForUser(user.id);
   clearRefreshCookie(res);
   res.json({ ok: true, message: 'Kata sandi berhasil diubah. Silakan masuk kembali.' });

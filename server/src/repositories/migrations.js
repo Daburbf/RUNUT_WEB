@@ -456,6 +456,25 @@ export const MIGRATIONS = [
         for each row execute function set_updated_at();
     `,
   },
+  {
+    version: 10,
+    name: 'token_transactions_bonus_type',
+    sql: `
+      alter table token_transactions drop constraint if exists token_transactions_type_check;
+      alter table token_transactions drop constraint if exists chk_token_tx_type;
+      alter table token_transactions add constraint chk_token_tx_type
+        check (type in ('purchase', 'usage', 'refund', 'bonus'));
+    `,
+  },
+  {
+    version: 11,
+    name: 'object_storage_monthly_usage_postgres_provider',
+    sql: `
+      alter table object_storage_monthly_usage drop constraint if exists object_storage_monthly_usage_provider_check;
+      alter table object_storage_monthly_usage add constraint object_storage_monthly_usage_provider_check
+        check (provider in ('oci', 'r2', 'postgres'));
+    `,
+  },
 ];
 
 export async function runMigrations(pool) {

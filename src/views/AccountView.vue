@@ -28,6 +28,7 @@ const totalUsed = computed(() => Number(auth.user?.total_used ?? summary.value.t
 
 const TYPE_LABEL = {
   purchase: { label: 'Pembelian', cls: 'bg-black text-white' },
+  bonus: { label: 'Bonus Pendaftaran', cls: 'bg-[#FF3000] text-white' },
   usage: { label: 'Pemakaian Analisis', cls: 'bg-[#F2F2F2] text-black' },
   refund: { label: 'Pengembalian (Refund)', cls: 'bg-[#FF3000] text-white' },
 }

@@ -121,7 +121,7 @@ test('QRIS Dinamis: masa berlaku 10 menit, custom_expiry dikirim ke Midtrans, au
   assert.equal(wh2.body.status, 'paid');
 
   const bal1 = (await request(app).get('/api/tokens').set(auth)).body.balance;
-  assert.equal(bal1, 10);
+  assert.equal(bal1, 20, '10 token bonus awal + 10 token pembelian');
 
   // 4. Late webhook untuk QRIS lama (p1) setelah p2 SUDAH lunas -> TIDAK boleh kredit ganda, harus ditandai rekonsiliasi!
   const whLate = await request(app).post('/api/payments/notify').send({
@@ -135,7 +135,7 @@ test('QRIS Dinamis: masa berlaku 10 menit, custom_expiry dikirim ke Midtrans, au
   });
   assert.equal(whLate.status, 200);
   const bal2 = (await request(app).get('/api/tokens').set(auth)).body.balance;
-  assert.equal(bal2, 10, 'late payment setelah replacement lunas tidak boleh menggandakan saldo token');
+  assert.equal(bal2, 20, 'late payment setelah replacement lunas tidak boleh menggandakan saldo token');
   const p1Updated = await payments.findByOrderId(p1.order_id);
   assert.equal(p1Updated.reconciliation_flag, 'late_payment_after_replacement_paid');
 });
@@ -168,7 +168,7 @@ test('QRIS Dinamis: pembayaran terlambat pada QRIS expired (tanpa replacement lu
   assert.equal(whLate.body.status, 'paid');
 
   const bal = (await request(app).get('/api/tokens').set(auth)).body.balance;
-  assert.equal(bal, 5, 'pembayaran sah yang terlambat harus tetap dikreditkan 5 token');
+  assert.equal(bal, 15, 'pembayaran sah yang terlambat harus tetap dikreditkan 5 token di atas 10 token bonus awal');
   const p2After = await payments.findByOrderId(p2.order_id);
   assert.equal(p2After.status, 'cancelled', 'QRIS pengganti yang masih pending harus dibatalkan');
 });

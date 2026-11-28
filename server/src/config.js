@@ -129,6 +129,15 @@ export const config = {
     clientId: (process.env.GOOGLE_CLIENT_ID || '').trim(),
     configured: Boolean((process.env.GOOGLE_CLIENT_ID || '').trim()),
   },
+
+  tokens: {
+    signupFreeTokens: (() => {
+      const raw = process.env.SIGNUP_FREE_TOKENS;
+      if (raw === undefined || String(raw).trim() === '') return 10;
+      const n = Math.trunc(Number(raw));
+      return Number.isFinite(n) && n >= 0 ? n : 10;
+    })(),
+  },
 };
 
 export function checkStartupConfig() {
